@@ -922,6 +922,15 @@ let console = {
 };
 
 /**
+ * An optional source capability may be declared as:
+ * favorites.updateCheck = {
+ *   markerScheme: string,
+ *   scanInterval: integer seconds,
+ *   load: async (folderId) => ({comics, pageSize, total})
+ * }.
+ * The load result is one complete ordered snapshot; it is not a page loader.
+ */
+/**
  * Create a comic object
  * @param id {string}
  * @param title {string}
@@ -934,9 +943,10 @@ let console = {
  * @param language {string?}
  * @param favoriteId {string?} - Only set this field if the comic is from favorites page
  * @param stars {number?} - 0-5, double
+ * @param favoriteUpdate {{marker: string, updateTime?: string, isNew?: boolean | null, metadata?: object}?}
  * @constructor
  */
-function Comic({id, title, subtitle, subTitle, cover, tags, description, maxPage, language, favoriteId, stars}) {
+function Comic({id, title, subtitle, subTitle, cover, tags, description, maxPage, language, favoriteId, stars, favoriteUpdate}) {
     this.id = id;
     this.title = title;
     this.subtitle = subtitle;
@@ -948,6 +958,7 @@ function Comic({id, title, subtitle, subTitle, cover, tags, description, maxPage
     this.language = language;
     this.favoriteId = favoriteId;
     this.stars = stars;
+    this.favoriteUpdate = favoriteUpdate;
 }
 
 /**

@@ -1,3 +1,4 @@
 .idea
 .vscode
-test/
+test/*
+!test/manwa_update_check_test.js

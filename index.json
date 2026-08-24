@@ -201,5 +201,12 @@
         "key": "mycomic",
         "version": "1.1.0",
         "description": "mycomic.com漫画源, 遇到Cloudflare验证请在源设置中登录"
+    },
+    {
+        "name": "漫蛙",
+        "fileName": "manwa.js",
+        "key": "manwa",
+        "version": "1.0.4",
+        "description": "支持登录、收藏夹、详情、阅读和评论读取。"
     }
 ]
