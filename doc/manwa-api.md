@@ -137,7 +137,6 @@ GET /getfavors?page=0&showOnlyUpdated=-1&isEnd=-1&isFullVersion=-1&order=1&order
       "id": 123,
       "cover_url": "/static/upload.../cover.webp",
       "book_name": "漫画标题",
-      "updateTime": "2026-08-23 12:34:56",
       "param": 123,
       "is_new": false,
       "full_is_new": false,
@@ -148,8 +147,15 @@ GET /getfavors?page=0&showOnlyUpdated=-1&isEnd=-1&isFullVersion=-1&order=1&order
         "chapter_order": "0.00",
         "status": 1
       },
-      "full_last_chapter": null,
-      "read_last_chapter": null,
+      "full_last_chapter": {
+        "id": 789,
+        "chapter_name": "完整版第 N 话"
+      },
+      "read_last_chapter": {
+        "id": 321,
+        "chapter_name": "已读章节",
+        "update_time": "2026-08-23 12:34:56"
+      },
       "full_version_id": 0,
       "level": 0,
       "cate": 0
@@ -167,7 +173,8 @@ Venera <code>Comic</code> 的最小映射：
 | <code>cover</code> | 将相对的 <code>cover_url</code> 按站点基地址解析为绝对地址 |
 | <code>subtitle</code> | <code>last_chapter.chapter_name</code>，没有时可用 <code>read_last_chapter.chapter_name</code> 或省略 |
 | <code>tags</code> | MVP 可为空数组；不要把内部数值 <code>cate</code> 直接展示为文本标签 |
-| <code>favoriteUpdate.marker</code> / <code>updateTime</code> | 使用 <code>book.updateTime</code> 的非空字符串；它是列表快照的更新时间证据 |
+| <code>favoriteUpdate.marker</code> | 使用 <code>normal:&lt;last_chapter.id&gt;|full:&lt;full_last_chapter.id-or-empty&gt;</code>；普通章节 ID 是列表更新证据 |
+| <code>favoriteUpdate.updateTime</code> | 省略（或为 <code>null</code>）；列表接口没有可用于更新判定的时间字段 |
 | <code>favoriteUpdate.isNew</code> | 仅保留布尔型 <code>is_new</code> 作为诊断信号，不单独判定更新 |
 | <code>favoriteUpdate.metadata.fullIsNew</code> | 保留布尔型 <code>full_is_new</code> 供 Debug 对照；不是更新判定依据 |
 
@@ -191,15 +198,32 @@ const siteOffset = pageIndex * favoritePageSize;
 ### 收藏列表更新检查边界
 
 Manwa 源声明 <code>favorites.updateCheck</code>，其 <code>markerScheme</code> 为
-<code>manwa-list-time-v1</code>，扫描间隔为 12 小时。<code>load(folderId)</code> 会先读取
+<code>manwa-list-chapter-id-v1</code>，扫描间隔为 12 小时。<code>load(folderId)</code> 会先读取
 <code>.favorite-count</code>，再以固定页大小 15 请求全部 offset；返回值必须包含完整的
 <code>comics</code>、<code>pageSize: 15</code> 和与数组长度相等的 <code>total</code>。
 
-每一本漫画都必须带非空 <code>book.updateTime</code>，同时作为
-<code>favoriteUpdate.marker</code> 和 <code>favoriteUpdate.updateTime</code>。更新判定由
-Venera 比较同一 marker scheme 下的 marker 与严格可解析的更新时间完成；重复的
-<code>is_new</code> 不会重新产生更新，<code>is_new</code> 与 <code>full_is_new</code> 只作为
-Debug 诊断信息。列表快照请求不读取漫画详情，也不使用旧的详情扫描队列。
+完整更新检查要求每本漫画具有对象形式的 <code>last_chapter</code>、非空
+<code>last_chapter.id</code>，以及严格的布尔型 <code>is_new</code> 和
+<code>full_is_new</code>。marker 固定为
+<code>normal:&lt;last_chapter.id&gt;|full:&lt;full_last_chapter.id-or-empty&gt;</code>；
+<code>full_last_chapter</code> 为对象且含 ID 时才填入完整版 ID。顶层没有可靠的
+<code>updateTime</code>，因此 <code>favoriteUpdate.updateTime</code> 省略或为
+<code>null</code>。<code>read_last_chapter.update_time</code> 只是阅读记录，绝不能作为
+更新 marker 或更新时间。
+
+普通收藏页与完整检查共用漫画对象、ID、标题和章节结构的最小校验；完整检查再执行
+上述更新证据校验。任意 HTTP 200 的 HTML/等待页、纯文本等待响应、JSON 解析失败、
+顶层 <code>err</code> 非 0、<code>books</code> 非数组、分页长度与初始收藏数不符、空或
+重复漫画 ID、缺少普通章节 ID、字段类型漂移和最终总数不符都会使本轮失败。等待/限流
+响应使用稳定的“收藏接口暂时不可用，请稍后重试”错误，不当作 Login expired，也不清
+Cookie。完整分页先全部在内存中校验，全部成功后才返回 snapshot；应用端继续原子提交，
+普通页面失败也不会覆盖已有缓存。
+
+更新判定由 Venera 在同一 marker scheme 下比较 marker；没有可比较时间时不伪造时间。
+重复的 <code>is_new</code> 不会重新产生更新，<code>is_new</code> 与
+<code>full_is_new</code> 只作为 Debug 诊断信息。列表快照请求不读取漫画详情，也不使用旧的
+详情扫描队列。完整成功快照间隔仍为 12 小时；失败继续沿用应用现有的 1 小时、6 小时、
+24 小时、7 天 backoff。
 
 ### <code>POST /addfavor</code>
 

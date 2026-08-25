@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.4"
+    version = "1.0.5"
 
     minAppVersion = "1.6.0"
 
@@ -89,19 +89,41 @@ class Manwa extends ComicSource {
         return response;
     }
 
+    transientError = "收藏接口暂时不可用，请稍后重试"
+
+    isTransientWaitText = (value) => /请等待|稍后再试|访问过于频繁|系统繁忙|服务繁忙/i.test(
+        String(value ?? "").trim(),
+    )
+
+    isTransientJsonBody = (value) => {
+        const text = String(value ?? "").trim();
+        return /^(?:<|doctype\b|html\b)/i.test(text);
+    }
+
     parseJson = (body, operation) => {
+        const text = String(body ?? "").trim();
+        if (this.isTransientJsonBody(text)) {
+            throw this.transientError;
+        }
         try {
-            return JSON.parse(body);
+            return JSON.parse(text);
         } catch (error) {
+            if (this.isTransientWaitText(text)) {
+                throw this.transientError;
+            }
             throw `${operation} returned invalid JSON`;
         }
     }
 
     requireJsonSuccess = (data, operation, loginSensitive = false) => {
+        const message = data && typeof data.msg === "string" ? data.msg.trim() : "";
+        if ((typeof data === "string" && this.isTransientWaitText(data))
+            || this.isTransientWaitText(message)) {
+            throw this.transientError;
+        }
         if (data && data.err === 0) {
             return data;
         }
-        const message = data && typeof data.msg === "string" ? data.msg.trim() : "";
         if (loginSensitive && /未登录|登录|登陆|login|session|expired|unauthor/i.test(message)) {
             throw "Login expired";
         }
@@ -120,28 +142,89 @@ class Manwa extends ComicSource {
         return result;
     }
 
-    parseFavoriteComic = (book) => {
+    normalizeId = (value) => {
+        if (typeof value !== "string" && typeof value !== "number") {
+            return undefined;
+        }
+        const text = String(value).trim();
+        if (!text || text === "undefined" || text === "null" || text === "NaN") {
+            return undefined;
+        }
+        return text;
+    }
+
+    validateFavoriteBook = (book, requireUpdateEvidence = false) => {
+        if (book == null || typeof book !== "object" || Array.isArray(book)) {
+            throw "收藏列表存在无效漫画结构";
+        }
+        const id = this.normalizeId(book.id);
+        if (!id) {
+            throw "收藏夹存在空漫画 ID";
+        }
+        if (typeof book.book_name !== "string" || !book.book_name.trim()) {
+            throw "收藏列表存在无效漫画标题";
+        }
+        const lastChapter = book.last_chapter;
+        if (lastChapter == null
+            || typeof lastChapter !== "object"
+            || Array.isArray(lastChapter)) {
+            throw "收藏列表存在无效章节结构";
+        }
+        for (const chapter of [book.full_last_chapter, book.read_last_chapter]) {
+            if (chapter != null
+                && (typeof chapter !== "object" || Array.isArray(chapter))) {
+                throw "收藏列表存在无效章节结构";
+            }
+        }
+        for (const chapter of [lastChapter, book.full_last_chapter, book.read_last_chapter]) {
+            if (chapter && chapter.id != null
+                && typeof chapter.id !== "string"
+                && typeof chapter.id !== "number") {
+                throw "收藏列表存在无效章节 ID";
+            }
+            if (chapter && chapter.chapter_name != null
+                && typeof chapter.chapter_name !== "string") {
+                throw "收藏列表存在无效章节结构";
+            }
+        }
+        if (requireUpdateEvidence) {
+            if (!this.normalizeId(lastChapter.id)) {
+                throw "收藏列表缺少最新章节 ID";
+            }
+            if (typeof book.is_new !== "boolean"
+                || typeof book.full_is_new !== "boolean") {
+                throw "收藏列表更新字段类型无效";
+            }
+        }
+        return {id, lastChapter};
+    }
+
+    parseFavoriteComic = (book, requireUpdateEvidence = false) => {
+        const validated = this.validateFavoriteBook(book, requireUpdateEvidence);
         const lastChapter = book && book.last_chapter;
         const readLastChapter = book && book.read_last_chapter;
         const subtitle = lastChapter && lastChapter.chapter_name
             || readLastChapter && readLastChapter.chapter_name;
-        const updateTime = String(book.updateTime ?? "").trim();
+        const normalChapterId = this.normalizeId(lastChapter && lastChapter.id);
+        const fullChapterId = this.normalizeId(
+            book.full_last_chapter && book.full_last_chapter.id,
+        );
+        const favoriteUpdate = normalChapterId ? {
+            marker: `normal:${normalChapterId}|full:${fullChapterId || ""}`,
+            isNew: typeof book.is_new === "boolean" ? book.is_new : null,
+            metadata: {
+                fullIsNew: typeof book.full_is_new === "boolean"
+                    ? book.full_is_new
+                    : null,
+            },
+        } : undefined;
         return new Comic({
-            id: String(book.id),
-            title: String(book.book_name ?? ""),
+            id: validated.id,
+            title: book.book_name.trim(),
             cover: this.toStaticUrl(book.cover_url) || "",
             subtitle: subtitle ? String(subtitle) : undefined,
             tags: [],
-            favoriteUpdate: updateTime ? {
-                marker: updateTime,
-                updateTime,
-                isNew: typeof book.is_new === "boolean" ? book.is_new : null,
-                metadata: {
-                    fullIsNew: typeof book.full_is_new === "boolean"
-                        ? book.full_is_new
-                        : null,
-                },
-            } : undefined,
+            favoriteUpdate,
         });
     }
 
@@ -168,6 +251,11 @@ class Manwa extends ComicSource {
         const document = new HtmlDocument(response.body);
         try {
             return this.parseFavoriteCount(document);
+        } catch (error) {
+            if (this.isTransientWaitText(response.body)) {
+                throw this.transientError;
+            }
+            throw error;
         } finally {
             document.dispose();
         }
@@ -253,18 +341,32 @@ class Manwa extends ComicSource {
                 return { comics: [], maxPage: 0 };
             }
             const books = await this.loadFavoriteBooks(siteOffset, bookshelfUrl);
-            if (pageIndex === 0 && books.length === 0) {
+            const expectedLength = Math.min(
+                this.favoritePageSize,
+                Math.max(0, favoriteCount - siteOffset),
+            );
+            if (books.length !== expectedLength) {
                 throw "收藏夹分页数据不一致";
             }
 
+            const ids = new Set();
+            const comics = books.map((book) => {
+                const comic = this.parseFavoriteComic(book);
+                if (ids.has(comic.id)) {
+                    throw "收藏夹存在重复或空漫画 ID";
+                }
+                ids.add(comic.id);
+                return comic;
+            });
+
             return {
-                comics: books.map((book) => this.parseFavoriteComic(book)),
+                comics,
                 maxPage: Math.ceil(favoriteCount / this.favoritePageSize),
             };
         },
 
         updateCheck: {
-            markerScheme: "manwa-list-time-v1",
+            markerScheme: "manwa-list-chapter-id-v1",
             scanInterval: 43200,
 
             load: async (folderId) => {
@@ -289,13 +391,7 @@ class Manwa extends ComicSource {
                         throw "收藏夹分页数据不一致";
                     }
                     for (const book of books) {
-                        if (book == null
-                            || book.id == null
-                            || String(book.id).trim() === ""
-                            || String(book.id) === "undefined") {
-                            throw "收藏夹存在空漫画 ID";
-                        }
-                        comics.push(this.parseFavoriteComic(book));
+                        comics.push(this.parseFavoriteComic(book, true));
                     }
                 }
 
@@ -304,11 +400,6 @@ class Manwa extends ComicSource {
                     const comic = comics[index];
                     if (!comic.id || comic.id === "undefined" || ids.has(comic.id)) {
                         throw "收藏夹存在重复或空漫画 ID";
-                    }
-                    if (!comic.favoriteUpdate
-                        || !comic.favoriteUpdate.marker
-                        || !comic.favoriteUpdate.updateTime) {
-                        throw "收藏列表缺少更新时间证据";
                     }
                     ids.add(comic.id);
                 }
