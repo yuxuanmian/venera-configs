@@ -537,6 +537,35 @@ class NewComicSource extends ComicSource {
             */
         },
         /**
+         * [Optional] optimized favorite update scan. Omit this capability for
+         * ordinary sources; App will use the normal detail result instead.
+         *
+         * favoriteUpdate: {
+         *     state: {
+         *         // Include only sanitized values actually supplied by the source.
+         *         updatedAt: item.updated_at, // RFC3339 with timezone
+         *         latestChapterId: String(item.latest_chapter_id),
+         *         chapterCount: item.chapter_count,
+         *         recentChapterIds: item.recent_chapters.map(
+         *             (chapter) => String(chapter.id),
+         *         ),
+         *     },
+         *     sourceUnread: typeof item.is_unread === "boolean"
+         *         ? item.is_unread
+         *         : null,
+         * }
+         *
+         * Remove undefined/invalid fields rather than inventing placeholders.
+         * Exceptional marker-only escape hatch:
+         * favoriteUpdate: {marker: String(item.stable_full_identity)}
+         * Marker and canonical metadata JSON are each limited to 4096 UTF-8
+         * bytes, and metadata is diagnostic-only.
+         */
+        // updateCheck: {
+        //     scanInterval: 43200,
+        //     load: async (folderId) => ({comics, pageSize, total}),
+        // },
+        /**
          * load comics with next page token
          * @param next {string | null} - next page token, null for first page
          * @param folder {string}

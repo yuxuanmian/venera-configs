@@ -101,7 +101,7 @@ function makeBooks(count) {
     },
   });
   const snapshot = await source.favorites.updateCheck.load(null);
-  assert.equal(source.favorites.updateCheck.markerScheme, 'manwa-list-chapter-id-v1');
+  assert.equal(source.favorites.updateCheck.markerScheme, undefined);
   assert.equal(source.favorites.updateCheck.scanInterval, 43200);
   assert.equal(snapshot.pageSize, 15);
   assert.equal(snapshot.total, 31);
@@ -115,13 +115,23 @@ function makeBooks(count) {
   assert(favoriteCalls.every((url) => url.includes('folder_id=0')));
   assert.equal(
     snapshot.comics[0].favoriteUpdate.marker,
-    'normal:chapter-1|full:full-1',
+    '["manwa-full-v1","chapter-1","full-1"]',
   );
+  assert.equal(snapshot.comics[0].favoriteUpdate.state, undefined);
   assert.equal(snapshot.comics[0].favoriteUpdate.updateTime, undefined);
-  assert.equal(snapshot.comics[1].favoriteUpdate.marker, 'normal:chapter-2|full:');
-  assert.equal(snapshot.comics[0].favoriteUpdate.isNew, false);
-  assert.equal(snapshot.comics[1].favoriteUpdate.isNew, true);
+  assert.equal(
+    JSON.stringify(snapshot.comics[1].favoriteUpdate.state),
+    JSON.stringify({latestChapterId: 'chapter-2'}),
+  );
+  assert.equal(snapshot.comics[0].favoriteUpdate.sourceUnread, false);
+  assert.equal(snapshot.comics[1].favoriteUpdate.sourceUnread, true);
+  assert.equal(snapshot.comics[0].favoriteUpdate.isNew, undefined);
   assert.equal(snapshot.comics[0].favoriteUpdate.metadata.fullIsNew, false);
+  assert.equal(snapshot.comics[0].favoriteUpdate.metadata.normalIsNew, false);
+  assert.equal(
+    snapshot.comics[0].favoriteUpdate.metadata.fullLatestChapterId,
+    'full-1',
+  );
   assert.equal(snapshot.comics[2].favoriteUpdate.metadata.fullIsNew, true);
   assert(calls.every((url) => !url.includes('/book/')));
 
@@ -328,16 +338,16 @@ function makeBooks(count) {
 
   const configFiles = fs.readdirSync(path.join(__dirname, '..'))
     .filter((file) => file.endsWith('.js'))
-    .filter((file) => file !== '_venera_.js' && file !== 'manwa.js');
+    .filter((file) => file !== '_venera_.js' && file !== 'manwa.js' && file !== '_template_.js');
   assert.deepEqual(
     configFiles.filter((file) =>
       fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
         .includes('updateCheck:')),
     [],
   );
-  assert.match(sourceCode, /version\s*=\s*["']1\.0\.5["']/);
+  assert.match(sourceCode, /version\s*=\s*["']1\.0\.6["']/);
   const index = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'index.json'), 'utf8'));
-  assert.equal(index.find((item) => item.key === 'manwa').version, '1.0.5');
+  assert.equal(index.find((item) => item.key === 'manwa').version, '1.0.6');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

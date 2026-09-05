@@ -922,13 +922,32 @@ let console = {
 };
 
 /**
- * An optional source capability may be declared as:
+ * An optional optimized favorite update scan may be declared as:
  * favorites.updateCheck = {
- *   markerScheme: string,
  *   scanInterval: integer seconds,
  *   load: async (folderId) => ({comics, pageSize, total})
  * }.
- * The load result is one complete ordered snapshot; it is not a page loader.
+ * The optimization and every favoriteUpdate field are optional. The load
+ * result is one complete ordered snapshot; it is not a page loader.
+ *
+ * comic.favoriteUpdate may contain:
+ * {
+ *   state?: {
+ *     updatedAt?: string,             // RFC3339 with an explicit timezone
+ *     latestChapterId?: string,       // stable source-scoped ID
+ *     chapterCount?: number,
+ *     recentChapterIds?: string[],    // newest-first, at most 10 IDs
+ *   },
+ *   sourceUnread?: boolean | null,    // account/source fact, not content state
+ *   marker?: string,                  // opaque fallback; hosts compare exact equality
+ *   metadata?: object,                // diagnostics only; never comparison input
+ * }
+ *
+ * Marker and canonical metadata JSON are each limited to 4096 UTF-8 bytes.
+ * Source-specific concepts must be adapted before crossing this boundary.
+ * Sources cannot provide isUpdated(old, current), and metadata must not
+ * affect comparison. A marker-only result is an exceptional escape hatch;
+ * conventional sources should provide sanitized state fields instead.
  */
 /**
  * Create a comic object
@@ -943,7 +962,7 @@ let console = {
  * @param language {string?}
  * @param favoriteId {string?} - Only set this field if the comic is from favorites page
  * @param stars {number?} - 0-5, double
- * @param favoriteUpdate {{marker: string, updateTime?: string, isNew?: boolean | null, metadata?: object}?}
+ * @param favoriteUpdate {{state?: object, sourceUnread?: boolean | null, marker?: string, metadata?: object}?}
  * @constructor
  */
 function Comic({id, title, subtitle, subTitle, cover, tags, description, maxPage, language, favoriteId, stars, favoriteUpdate}) {

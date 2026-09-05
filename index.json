@@ -206,7 +206,10 @@
         "name": "漫蛙",
         "fileName": "manwa.js",
         "key": "manwa",
-        "version": "1.0.5",
-        "description": "支持登录、收藏夹、详情、阅读和评论读取。"
+        "version": "1.0.6",
+        "description": "支持登录、收藏夹、详情、阅读和评论读取。",
+        "cloudTracking": {
+            "scanner": "extensions/server/manwa/scanning.js"
+        }
     }
 ]

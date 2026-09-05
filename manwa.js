@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.5"
+    version = "1.0.6"
 
     minAppVersion = "1.6.0"
 
@@ -209,15 +209,36 @@ class Manwa extends ComicSource {
         const fullChapterId = this.normalizeId(
             book.full_last_chapter && book.full_last_chapter.id,
         );
-        const favoriteUpdate = normalChapterId ? {
-            marker: `normal:${normalChapterId}|full:${fullChapterId || ""}`,
-            isNew: typeof book.is_new === "boolean" ? book.is_new : null,
-            metadata: {
-                fullIsNew: typeof book.full_is_new === "boolean"
-                    ? book.full_is_new
-                    : null,
-            },
-        } : undefined;
+        let favoriteUpdate;
+        if (normalChapterId) {
+            const normalIsNew = typeof book.is_new === "boolean"
+                ? book.is_new
+                : null;
+            const fullIsNew = typeof book.full_is_new === "boolean"
+                ? book.full_is_new
+                : null;
+            favoriteUpdate = {
+                sourceUnread: normalIsNew === null && fullIsNew === null
+                    ? null
+                    : Boolean(normalIsNew || fullIsNew),
+                metadata: {
+                    normalIsNew,
+                    fullIsNew,
+                    fullLatestChapterId: fullChapterId || null,
+                },
+            };
+            if (fullChapterId) {
+                favoriteUpdate.marker = JSON.stringify([
+                    "manwa-full-v1",
+                    normalChapterId,
+                    fullChapterId,
+                ]);
+            } else {
+                favoriteUpdate.state = {
+                    latestChapterId: normalChapterId,
+                };
+            }
+        }
         return new Comic({
             id: validated.id,
             title: book.book_name.trim(),
@@ -366,7 +387,6 @@ class Manwa extends ComicSource {
         },
 
         updateCheck: {
-            markerScheme: "manwa-list-chapter-id-v1",
             scanInterval: 43200,
 
             load: async (folderId) => {
