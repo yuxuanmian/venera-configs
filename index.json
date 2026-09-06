@@ -8,7 +8,7 @@
     {
         "name": "拷贝漫画(多账号)",
         "fileName": "copy_manga_multi_accounts.js",
-        "key": "copy_manga",
+        "key": "copy_manga_multi",
         "version": "1.4.1"
     },
     {
@@ -207,9 +207,6 @@
         "fileName": "manwa.js",
         "key": "manwa",
         "version": "1.0.6",
-        "description": "支持登录、收藏夹、详情、阅读和评论读取。",
-        "cloudTracking": {
-            "scanner": "extensions/server/manwa/scanning.js"
-        }
+        "description": "支持登录、收藏夹、详情、阅读和评论读取。"
     }
 ]
