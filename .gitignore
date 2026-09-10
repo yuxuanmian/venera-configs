@@ -2,4 +2,6 @@
 .vscode
 test/*
 !test/manwa_update_check_test.js
+!test/scan/
+!test/scan/**
 tools/__pycache__/

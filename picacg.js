@@ -3,7 +3,7 @@ class Picacg extends ComicSource {
 
     key = "picacg"
 
-    version = "1.0.6"
+    version = "1.0.7"
 
     minAppVersion = "1.0.0"
 
@@ -44,6 +44,329 @@ class Picacg extends ComicSource {
             "signature": signature,
             "http_client": "dart:io",
         }
+    }
+
+    // Debug scan state is deliberately local to this Source instance.  It is
+    // not source data and is never returned by a scan result.
+    _scanAuthState = null
+
+    _scanAccount = () => {
+        const value = this.loadData('account')
+        if (!Array.isArray(value)
+            || value.length < 2
+            || typeof value[0] !== 'string'
+            || typeof value[1] !== 'string'
+            || !value[0]
+            || !value[1]) {
+            return null
+        }
+        return [value[0], value[1]]
+    }
+
+    _scanToken = () => {
+        const value = this.loadData('token')
+        return typeof value === 'string' && value.trim() ? value : null
+    }
+
+    _scanSameAccount = (left, right) => {
+        return Array.isArray(left)
+            && Array.isArray(right)
+            && left.length === right.length
+            && left.every((value, index) => value === right[index])
+    }
+
+    _scanSyncAuthState = () => {
+        const account = this._scanAccount()
+        const token = this._scanToken()
+        if (!this._scanAuthState
+            || !this._scanSameAccount(this._scanAuthState.accountSnapshot, account)) {
+            this._scanAuthState = {
+                accountSnapshot: account ? [...account] : null,
+                tokenSnapshot: token,
+                generation: 0,
+                refresh: null,
+            }
+        } else if (this._scanAuthState.tokenSnapshot !== token) {
+            // ComicSource.saveData updates the in-memory token before its
+            // asynchronous file write settles. Keep the creator's refresh
+            // generation stable while that write is pending, otherwise a
+            // concurrent 401 would mistake the intermediate token for a
+            // completed generation and start a second login.
+            const refresh = this._scanAuthState.refresh
+            if (refresh
+                && refresh.pendingToken === token
+                && refresh.tokenSnapshot === this._scanAuthState.tokenSnapshot) {
+                return this._scanAuthState
+            }
+            this._scanAuthState.tokenSnapshot = token
+            this._scanAuthState.generation += 1
+        }
+        return this._scanAuthState
+    }
+
+    _scanCode = (value) => {
+        if (typeof value !== 'string') return undefined
+        const text = value.trim()
+        return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(text)
+            && !this._scanUntrustedDiagnostic(text) ? text : undefined
+    }
+
+    _scanUntrustedDiagnostic = (text) => /(?:^|\s|[{},();\[\]])["']?(?:authorization|cookie|set-cookie|token|password|passwd|secret|api[-_]?key|body)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/i.test(text)
+        || /<\s*(?:\/?[A-Za-z][^>]*|![^>]*|--[^>]*)>/i.test(text)
+        || /[\[{]/.test(text)
+
+    _scanMessage = (value) => {
+        if (typeof value !== 'string') return undefined
+        const text = value.trim()
+        if (!text || this._scanUntrustedDiagnostic(text)
+            || /\b(?:basic|bearer)\s+[^\s,;}]+/i.test(text)
+            || /https?:\/\//i.test(text)
+        ) {
+            return undefined
+        }
+        return [...text].length <= 256 ? text : [...text].slice(0, 256).join('')
+    }
+
+    _scanFailure = (fields = {}) => {
+        const failure = {}
+        if (Number.isInteger(fields.httpStatus) && fields.httpStatus >= 100 && fields.httpStatus <= 599) {
+            failure.httpStatus = fields.httpStatus
+        }
+        const sourceCode = this._scanCode(fields.sourceCode)
+        if (sourceCode) failure.sourceCode = sourceCode
+        const exceptionType = this._scanCode(fields.exceptionType)
+        if (exceptionType) failure.exceptionType = exceptionType
+        const message = this._scanMessage(fields.message)
+        if (message) failure.message = message
+        return {failure}
+    }
+
+    _scanFailureFromError = (error) => {
+        if (error && error.scanFailure && typeof error.scanFailure === 'object') {
+            return this._scanFailure(error.scanFailure)
+        }
+        return this._scanFailure({
+            exceptionType: 'ScanRequestError',
+            message: 'Picacg scan request failed',
+        })
+    }
+
+    _scanRequest = async (request, method, path, token, body = undefined) => {
+        try {
+            return {
+                ok: true,
+                response: await request({
+                    method,
+                    url: `${this.loadSetting('base_url')}/${path}`,
+                    headers: this.buildHeaders(method, path, token),
+                    ...(body === undefined ? {} : {body}),
+                }),
+            }
+        } catch (error) {
+            return {ok: false, failure: this._scanFailureFromError(error)}
+        }
+    }
+
+    _scanRefresh = async (state, record, account) => {
+        try {
+            if (this._scanAuthState !== state
+                || !this._scanSameAccount(this._scanAccount(), account)) {
+                return {ok: false, failure: this._scanFailure({message: 'Picacg account changed'})}
+            }
+            const responseResult = await this._scanRequest(
+                record.request,
+                'POST',
+                'auth/sign-in',
+                null,
+                JSON.stringify({email: account[0], password: account[1]}),
+            )
+            if (!responseResult.ok) return responseResult
+            const response = responseResult.response
+            if (!response || response.status !== 200) {
+                return {
+                    ok: false,
+                    failure: this._scanFailure({
+                        httpStatus: response && response.status,
+                        message: 'Picacg authentication failed',
+                    }),
+                }
+            }
+            let data
+            try {
+                data = JSON.parse(response.body)
+            } catch (_) {
+                return {ok: false, failure: this._scanFailure({message: 'Picacg authentication response was invalid'})}
+            }
+            const token = data && data.data && data.data.token
+            if (typeof token !== 'string' || !token.trim()) {
+                return {ok: false, failure: this._scanFailure({message: 'Picacg authentication token was missing'})}
+            }
+
+            // Keep the state/generation check adjacent to saveData.  There is
+            // intentionally no await between the check, persistence request
+            // and in-memory generation update, so an older recovery cannot
+            // overwrite a newer ordinary login.
+            const current = this._scanSyncAuthState()
+            if (current !== state
+                || !this._scanSameAccount(current.accountSnapshot, account)) {
+                return {ok: false, failure: this._scanFailure({message: 'Picacg account changed'})}
+            }
+            if (current.generation !== record.generation
+                || current.tokenSnapshot !== record.tokenSnapshot) {
+                return current.tokenSnapshot
+                    ? {ok: true}
+                    : {ok: false, failure: this._scanFailure({message: 'Picacg token is unavailable'})}
+            }
+            // The host bridge may return either a synchronous value (the
+            // source harness does) or a Promise (the real save_data bridge
+            // does).  Invoke it only after the state check above, then settle
+            // the in-memory generation after persistence succeeds.  This
+            // keeps an async save failure inside the scan failure envelope
+            // instead of creating an unhandled rejection.
+            let saveResult
+            record.pendingToken = token
+            try {
+                saveResult = this.saveData('token', token)
+                await Promise.resolve(saveResult)
+            } catch (error) {
+                record.pendingToken = null
+                if (this._scanAuthState === state
+                    && this._scanToken() === token
+                    && this.data && typeof this.data === 'object') {
+                    this.data.token = record.tokenSnapshot
+                    state.tokenSnapshot = record.tokenSnapshot
+                }
+                return {ok: false, failure: this._scanFailureFromError(error)}
+            }
+            record.pendingToken = null
+            const latest = this._scanSyncAuthState()
+            if (latest !== state
+                || !this._scanSameAccount(latest.accountSnapshot, account)) {
+                return {ok: false, failure: this._scanFailure({message: 'Picacg account changed'})}
+            }
+            if (latest.generation !== record.generation
+                || latest.tokenSnapshot !== record.tokenSnapshot) {
+                return latest.tokenSnapshot
+                    ? {ok: true}
+                    : {ok: false, failure: this._scanFailure({message: 'Picacg token is unavailable'})}
+            }
+            // A successful authentication is a new observation even when
+            // the server returns the same token text.  The token-change path
+            // above has already advanced generation for a genuinely new
+            // token; this branch is reached only when that did not happen.
+            latest.generation += 1
+            latest.tokenSnapshot = token
+            return {ok: true}
+        } catch (error) {
+            return {ok: false, failure: this._scanFailureFromError(error)}
+        }
+    }
+
+    _scanGetComic = async (comicId, request) => {
+        let state = this._scanSyncAuthState()
+        const account = state.accountSnapshot ? [...state.accountSnapshot] : null
+        const generation = state.generation
+        const token = state.tokenSnapshot
+        const path = `comics/${encodeURIComponent(comicId)}`
+        const firstResult = await this._scanRequest(request, 'GET', path, token)
+        if (!firstResult.ok) return firstResult
+        const first = firstResult.response
+        if (!first || first.status !== 401) return firstResult
+        state = this._scanSyncAuthState()
+        if (state.accountSnapshot == null
+            || !this._scanSameAccount(state.accountSnapshot, account)
+            || this._scanAuthState !== state) {
+            return {ok: false, failure: this._scanFailure({message: 'Picacg account is unavailable'})}
+        }
+        if (state.generation !== generation || state.tokenSnapshot !== token) {
+            if (!state.tokenSnapshot) {
+                return {ok: false, failure: this._scanFailure({message: 'Picacg token is unavailable'})}
+            }
+            return this._scanRequest(request, 'GET', path, state.tokenSnapshot)
+        }
+        let record = state.refresh
+        if (!record || record.generation !== state.generation) {
+            record = {
+                generation: state.generation,
+                tokenSnapshot: state.tokenSnapshot,
+                request,
+                promise: null,
+            }
+            // Assign before starting the async function: concurrent 401s
+            // must observe this exact creator record.
+            state.refresh = record
+            record.promise = Promise.resolve(this._scanRefresh(state, record, account)).then(
+                (result) => {
+                    if (this._scanAuthState === state && state.refresh === record) {
+                        state.refresh = null
+                    }
+                    return result
+                },
+                (error) => {
+                    if (this._scanAuthState === state && state.refresh === record) {
+                        state.refresh = null
+                    }
+                    throw error
+                },
+            )
+        }
+        const refreshed = await record.promise
+        if (!refreshed || !refreshed.ok) {
+            return refreshed && refreshed.failure
+                ? refreshed
+                : {ok: false, failure: this._scanFailure({message: 'Picacg authentication failed'})}
+        }
+        state = this._scanSyncAuthState()
+        if (!state.tokenSnapshot) {
+            return {ok: false, failure: this._scanFailure({message: 'Picacg token is unavailable'})}
+        }
+        return this._scanRequest(request, 'GET', path, state.tokenSnapshot)
+    }
+
+    scan = {
+        primary: 'comic',
+        comic: {
+            load: async (id, request) => {
+                if (typeof id !== 'string' || !id.trim() || typeof request !== 'function') {
+                    return this._scanFailure({message: 'Picacg comic identity is invalid'})
+                }
+                const comicId = id.trim()
+                const result = await this._scanGetComic(comicId, request)
+                if (!result || !result.ok) {
+                    return result && result.failure
+                        ? result.failure
+                        : this._scanFailure({message: 'Picacg comic request failed'})
+                }
+                const response = result.response
+                if (!response || response.status !== 200) {
+                    return this._scanFailure({
+                        httpStatus: response && response.status,
+                        message: 'Picacg comic request failed',
+                    })
+                }
+                let data
+                try {
+                    data = JSON.parse(response.body)
+                } catch (_) {
+                    return this._scanFailure({message: 'Picacg comic response was invalid'})
+                }
+                const comic = data && data.data && data.data.comic
+                if (!comic || typeof comic !== 'object' || Array.isArray(comic)) {
+                    return this._scanFailure({message: 'Picacg comic data was invalid'})
+                }
+                if (comic._id !== undefined && String(comic._id) !== comicId) {
+                    return this._scanFailure({message: 'Picacg comic identity changed'})
+                }
+                if (typeof comic.updated_at !== 'string' || !comic.updated_at.trim()) {
+                    return this._scanFailure({message: 'Picacg comic update time was missing'})
+                }
+                return {
+                    observation: {
+                        update: {updatedAt: comic.updated_at.trim()},
+                    },
+                }
+            },
+        },
     }
 
     account = {

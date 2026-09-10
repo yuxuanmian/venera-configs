@@ -31,6 +31,34 @@ class NewComicSource extends ComicSource {
     url = ""
 
     /**
+     * [Optional] Debug-only raw scan capability.  The host supplies the final
+     * request callback; source code must not call Network, UI or persistence
+     * APIs from this declaration.
+     *
+     * A single capability may omit primary.  When both are declared, primary
+     * is required and must be exactly "comic" or "collection".
+     * Returned values are plain JSON: comic.load returns an observation or a
+     * failure; collection.load returns {items, next}, where next must be an
+     * own property and only null ends traversal.
+     */
+    scan = {
+        primary: "comic",
+        comic: {
+            load: async (comicId, request) => ({
+                observation: {
+                    update: {updatedAt: "2026-01-01"},
+                },
+            }),
+        },
+        // collection: {
+        //     load: async (collectionKey, cursor, request) => ({
+        //         items: [],
+        //         next: null,
+        //     }),
+        // },
+    }
+
+    /**
      * [Optional] init function
      */
     init() {

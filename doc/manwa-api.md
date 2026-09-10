@@ -408,6 +408,38 @@ Venera 的 <code>comic.loadComments</code> 首次调用传入 <code>page=1</code
 
 ## 上线前待补抓清单
 
+## Debug scan collection（004）
+
+`manwa.js` additionally declares `scan.collection.load("default", cursor,
+request)`. This is a source adapter for the application's Debug-only raw scan;
+the existing `favorites.loadComics` and historical `favorites.updateCheck`
+paths remain unchanged.
+
+The adapter requests `/getfavors` with offsets `0, 15, 30, ...` and the fixed
+query `showOnlyUpdated=-1&isEnd=-1&isFullVersion=-1&order=0&order_type=0&folder_id=0`.
+It does not call `/bookshelf`, read a total, or use `maxPage` to stop. A full
+page produces a new `page` cursor; a short or empty page produces `verify`.
+The verify request reads offset zero again and compares only the ordered
+`headIds` captured from the first page. Equal IDs return an empty page with
+`next: null`; a changed head returns a scope failure. A 15-item multiple thus
+requires the extra empty page before verification.
+
+The cursor is opaque to the Dart core and has exactly one of these shapes:
+`{phase:"page", offset, headIds}` or `{phase:"verify", headIds}`. It contains
+no aliases, totals, credentials, or response body. The source validates the
+shape before issuing HTTP. Every response page must be valid JSON with
+`err === 0` and a `books` array of at most 15 entries; HTML, an empty body,
+non-zero `err`, malformed books, and duplicate IDs are failures rather than an
+empty successful collection.
+
+Each returned item contains `comicId` from `book.id`, `update.latestChapterId`
+only from `book.last_chapter.id`, and a strict `sourceUnread` derived from the
+two boolean `is_new` fields. `full_last_chapter.id`, reading timestamps,
+markers, and guessed chapter counts are deliberately omitted. This is an
+optimistic traversal: a stable first-page head does not detect every deletion
+or same-sized replacement, and neither completion nor failure deletes absent
+records.
+
 1. 验证 <code>/addfavor</code> 的 <code>val</code> 映射与未登录错误，确认默认收藏夹是否足够。
 2. 若要支持多文件夹，补抓文件夹列表、新建、删除和移动收藏的请求。
 3. 验证验证码错误、过期和成功后的 Cookie 行为；绝不在文档中记录凭据。

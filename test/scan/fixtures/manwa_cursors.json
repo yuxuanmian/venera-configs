@@ -1,0 +1,5 @@
+[
+  null,
+  {"phase":"page","offset":15,"headIds":["book-1","book-2"]},
+  {"phase":"verify","headIds":["book-1","book-2"]}
+]

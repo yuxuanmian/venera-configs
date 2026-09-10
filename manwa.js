@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.6"
+    version = "1.0.7"
 
     minAppVersion = "1.6.0"
 
@@ -247,6 +247,236 @@ class Manwa extends ComicSource {
             tags: [],
             favoriteUpdate,
         });
+    }
+
+    _scanFailure = (fields = {}) => {
+        const failure = {}
+        if (Number.isInteger(fields.httpStatus) && fields.httpStatus >= 100 && fields.httpStatus <= 599) {
+            failure.httpStatus = fields.httpStatus
+        }
+        const sourceCode = this._scanCode(fields.sourceCode)
+        if (sourceCode) failure.sourceCode = sourceCode
+        const exceptionType = this._scanCode(fields.exceptionType)
+        if (exceptionType) failure.exceptionType = exceptionType
+        const message = this._scanMessage(fields.message)
+        if (message) failure.message = message
+        return {failure}
+    }
+
+    _scanFailureFromError = (error) => {
+        if (error && error.scanFailure && typeof error.scanFailure === 'object') {
+            return this._scanFailure(error.scanFailure)
+        }
+        return this._scanFailure({
+            exceptionType: 'ScanRequestError',
+            message: 'Manwa scan request failed',
+        })
+    }
+
+    _scanCode = (value) => {
+        if (typeof value !== 'string') return undefined
+        const text = value.trim()
+        return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(text)
+            && !this._scanUntrustedDiagnostic(text) ? text : undefined
+    }
+
+    _scanUntrustedDiagnostic = (text) => /(?:^|\s|[{},();\[\]])["']?(?:authorization|cookie|set-cookie|token|password|passwd|secret|api[-_]?key|body)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/i.test(text)
+        || /<\s*(?:\/?[A-Za-z][^>]*|![^>]*|--[^>]*)>/i.test(text)
+        || /[\[{]/.test(text)
+
+    _scanMessage = (value) => {
+        if (typeof value !== 'string') return undefined
+        const text = value.trim()
+        if (!text || this._scanUntrustedDiagnostic(text)
+            || /\b(?:basic|bearer)\s+[^\s,;}]+/i.test(text)
+            || /https?:\/\//i.test(text)
+        ) {
+            return undefined
+        }
+        return [...text].length <= 256 ? text : [...text].slice(0, 256).join('')
+    }
+
+    _scanId = (value) => {
+        if (typeof value === 'string') {
+            const text = value.trim()
+            return text && [...text].length <= 1024 ? text : undefined
+        }
+        if (typeof value === 'number' && Number.isSafeInteger(value)) {
+            return String(value)
+        }
+        return undefined
+    }
+
+    _scanHeadIds = (value, exactLength = null) => {
+        if (!Array.isArray(value)
+            || (exactLength != null && value.length !== exactLength)
+            || value.length > 15) {
+            return undefined
+        }
+        const ids = []
+        for (const item of value) {
+            if (typeof item !== 'string' || !item.trim() || [...item].length > 1024 || ids.includes(item.trim())) {
+                return undefined
+            }
+            ids.push(item.trim())
+        }
+        return ids
+    }
+
+    _scanCursor = (cursor) => {
+        if (cursor === null) return {phase: 'first'}
+        if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return undefined
+        const keys = Object.keys(cursor)
+        if (cursor.phase === 'page'
+            && keys.length === 3
+            && keys.includes('phase')
+            && keys.includes('offset')
+            && keys.includes('headIds')
+            && Number.isSafeInteger(cursor.offset)
+            && cursor.offset > 0
+            && cursor.offset % this.favoritePageSize === 0
+            && cursor.offset <= Number.MAX_SAFE_INTEGER - this.favoritePageSize) {
+            const headIds = this._scanHeadIds(cursor.headIds, 15)
+            return headIds ? {phase: 'page', offset: cursor.offset, headIds} : undefined
+        }
+        if (cursor.phase === 'verify'
+            && keys.length === 2
+            && keys.includes('phase')
+            && keys.includes('headIds')) {
+            const headIds = this._scanHeadIds(cursor.headIds)
+            return headIds ? {phase: 'verify', headIds} : undefined
+        }
+        return undefined
+    }
+
+    _scanBook = (book) => {
+        if (!book || typeof book !== 'object' || Array.isArray(book)) {
+            return this._scanFailure({message: 'Manwa favorite item was invalid'})
+        }
+        const comicId = this._scanId(book.id)
+        if (!comicId) return this._scanFailure({message: 'Manwa comic ID was invalid'})
+        const lastChapter = book.last_chapter && typeof book.last_chapter === 'object' && !Array.isArray(book.last_chapter)
+            ? this._scanId(book.last_chapter.id)
+            : undefined
+        const normalUnread = typeof book.is_new === 'boolean' ? book.is_new : null
+        const fullUnread = typeof book.full_is_new === 'boolean' ? book.full_is_new : null
+        const sourceUnread = normalUnread === true || fullUnread === true
+            ? true
+            : normalUnread === false && fullUnread === false
+                ? false
+                : undefined
+        const observation = {}
+        if (lastChapter) observation.update = {latestChapterId: lastChapter}
+        if (sourceUnread !== undefined) observation.sourceUnread = sourceUnread
+        if (!Object.keys(observation).length) {
+            return this._scanFailure({message: 'Manwa comic has no scan observation'})
+        }
+        return {item: {comicId, observation}}
+    }
+
+    _scanFetchPage = async (offset, request, includeObservations = true) => {
+        const path = 'getfavors?page=' + encodeURIComponent(offset)
+            + '&showOnlyUpdated=-1&isEnd=-1&isFullVersion=-1'
+            + '&order=0&order_type=0&folder_id=0'
+        let response
+        try {
+            response = await request({
+                method: 'GET',
+                url: `${this.baseUrl}/${path}`,
+                headers: this.jsonHeaders(`${this.baseUrl}/bookshelf`),
+            })
+        } catch (error) {
+            return this._scanFailureFromError(error)
+        }
+        if (!response || typeof response.status !== 'number' || response.status < 200 || response.status >= 300) {
+            return this._scanFailure({
+                httpStatus: response && response.status,
+                message: 'Manwa favorites request failed',
+            })
+        }
+        let data
+        try {
+            if (typeof response.body !== 'string' || !response.body.trim()) throw new Error('empty')
+            data = JSON.parse(response.body)
+        } catch (_) {
+            return this._scanFailure({message: 'Manwa favorites response was invalid'})
+        }
+        if (!data || data.err !== 0) {
+            return this._scanFailure({
+                sourceCode: data && data.err != null ? String(data.err) : undefined,
+                message: 'Manwa favorites response failed',
+            })
+        }
+        if (!Array.isArray(data.books) || data.books.length > this.favoritePageSize) {
+            return this._scanFailure({message: 'Manwa favorites page was invalid'})
+        }
+        const items = []
+        const ids = new Set()
+        for (const book of data.books) {
+            if (!book || typeof book !== 'object' || Array.isArray(book)) {
+                return this._scanFailure({message: 'Manwa favorite item was invalid'})
+            }
+            const comicId = this._scanId(book.id)
+            if (!comicId) return this._scanFailure({message: 'Manwa comic ID was invalid'})
+            if (ids.has(comicId)) {
+                return this._scanFailure({message: 'Manwa favorites page contained duplicate IDs'})
+            }
+            ids.add(comicId)
+            if (!includeObservations) {
+                items.push({comicId})
+                continue
+            }
+            const result = this._scanBook(book)
+            if (result.failure) return result
+            items.push(result.item)
+        }
+        return {ok: true, items}
+    }
+
+    _scanSameIds = (left, right) => Array.isArray(left)
+        && Array.isArray(right)
+        && left.length === right.length
+        && left.every((value, index) => value === right[index])
+
+    scan = {
+        primary: 'collection',
+        collection: {
+            load: async (collectionKey, cursor, request) => {
+                if (collectionKey !== 'default' || typeof request !== 'function') {
+                    return this._scanFailure({message: 'Manwa collection identity is invalid'})
+                }
+                const state = this._scanCursor(cursor)
+                if (!state) return this._scanFailure({message: 'Manwa scan cursor was invalid'})
+                const offset = state.phase === 'first'
+                    ? 0
+                    : state.phase === 'page'
+                        ? state.offset
+                        : 0
+                const result = await this._scanFetchPage(offset, request, state.phase !== 'verify')
+                if (!result.ok) return result
+                if (state.phase === 'verify') {
+                    const ids = result.items.map((item) => item.comicId)
+                    if (!this._scanSameIds(ids, state.headIds)) {
+                        return this._scanFailure({message: 'Manwa favorites changed during scan'})
+                    }
+                    return {items: [], next: null}
+                }
+                const headIds = state.phase === 'first'
+                    ? result.items.map((item) => item.comicId)
+                    : state.headIds
+                const next = result.items.length === this.favoritePageSize
+                    ? {
+                        phase: 'page',
+                        offset: offset + this.favoritePageSize,
+                        headIds: [...headIds],
+                    }
+                    : {
+                        phase: 'verify',
+                        headIds: [...headIds],
+                    }
+                return {items: result.items, next}
+            },
+        },
     }
 
     parseFavoriteCount = (document) => {

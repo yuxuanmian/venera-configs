@@ -1,0 +1,5 @@
+{
+  "valid": {"data":{"comic":{"_id":"comic-1","updated_at":"2026-09-10T12:30:45.123Z"}}},
+  "invalid": {"data":{"comic":{}}},
+  "auth": {"data":{"token":"synthetic-token"}}
+}

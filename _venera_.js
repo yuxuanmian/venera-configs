@@ -1092,6 +1092,20 @@ class ComicSource {
     url = ""
 
     /**
+     * Optional Debug acquisition capability. This is a declaration only and
+     * is not a second script/runtime. The host app supplies the final
+     * request({method: "GET"|"POST", url, headers?, body?}) callback as the
+     * last argument to load.
+     *
+     * scan.comic.load(id, request) returns {observation} or {failure}.
+     * scan.collection.load(key, cursor, request) returns {items, next};
+     * items and next must be own fields, and only next: null terminates.
+     * Unknown fields are ignored by the host. No total/maxPage or old
+     * favorite/update-check fallback is used.
+     */
+    scan = null
+
+    /**
      * load data with its key
      * @param {string} dataKey
      * @returns {any}
