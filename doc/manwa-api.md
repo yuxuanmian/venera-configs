@@ -197,6 +197,11 @@ const siteOffset = pageIndex * favoritePageSize;
 
 ### 收藏列表更新检查边界
 
+> **状态：已下线（仅兼容保留）**。应用侧自 005 起不再读取
+> <code>favorites.updateCheck</code>；本节记录的是该通道的历史行为，它仍保留在
+> <code>manwa.js</code> 中，只为仍在旧版本应用上的用户服务。新源 MUST NOT 声明它。
+> 现行契约见 <a href="scan-contract-v1.md">scan-contract-v1.md</a>。
+
 Manwa 源声明 <code>favorites.updateCheck</code>，其 <code>markerScheme</code> 为
 <code>manwa-list-chapter-id-v1</code>，扫描间隔为 12 小时。<code>load(folderId)</code> 会先读取
 <code>.favorite-count</code>，再以固定页大小 15 请求全部 offset；返回值必须包含完整的
@@ -219,7 +224,7 @@ Manwa 源声明 <code>favorites.updateCheck</code>，其 <code>markerScheme</cod
 Cookie。完整分页先全部在内存中校验，全部成功后才返回 snapshot；应用端继续原子提交，
 普通页面失败也不会覆盖已有缓存。
 
-更新判定由 Venera 在同一 marker scheme 下比较 marker；没有可比较时间时不伪造时间。
+历史判定由 Venera 在同一 marker scheme 下比较 marker；没有可比较时间时不伪造时间。
 重复的 <code>is_new</code> 不会重新产生更新，<code>is_new</code> 与
 <code>full_is_new</code> 只作为 Debug 诊断信息。列表快照请求不读取漫画详情，也不使用旧的
 详情扫描队列。完整成功快照间隔仍为 12 小时；失败继续沿用应用现有的 1 小时、6 小时、
@@ -408,12 +413,19 @@ Venera 的 <code>comic.loadComments</code> 首次调用传入 <code>page=1</code
 
 ## 上线前待补抓清单
 
-## Debug scan collection（004）
+## Debug scan collection（004，005 起同时供判定使用）
 
 `manwa.js` additionally declares `scan.collection.load("default", cursor,
-request)`. This is a source adapter for the application's Debug-only raw scan;
-the existing `favorites.loadComics` and historical `favorites.updateCheck`
-paths remain unchanged.
+request)`. This is a source adapter for the application's scan kernel; since 005
+its persisted results are also the input to the App's judgment domain. The
+existing `favorites.loadComics` path remains unchanged, and the historical
+`favorites.updateCheck` path is retained for older App versions only.
+
+The branch also declares the required `fieldSource` mapping (Contract C1):
+`latestChapterId: "last_chapter.id"` and
+`sourceUnread: "is_new|full_is_new"`. The App normalizes that declaration into
+the branch's comparable label; a change to the mapping makes judgment rebuild
+the comparison baseline instead of reporting a false library-wide update.
 
 The adapter requests `/getfavors` with offsets `0, 15, 30, ...` and the fixed
 query `showOnlyUpdated=-1&isEnd=-1&isFullVersion=-1&order=0&order_type=0&folder_id=0`.
@@ -435,10 +447,11 @@ empty successful collection.
 Each returned item contains `comicId` from `book.id`, `update.latestChapterId`
 only from `book.last_chapter.id`, and a strict `sourceUnread` derived from the
 two boolean `is_new` fields. `full_last_chapter.id`, reading timestamps,
-markers, and guessed chapter counts are deliberately omitted. This is an
-optimistic traversal: a stable first-page head does not detect every deletion
-or same-sized replacement, and neither completion nor failure deletes absent
-records.
+markers, and guessed chapter counts are deliberately omitted. Identifiers must
+not contain U+0000, because the App joins observation identities with that
+character. This is an optimistic traversal: a stable first-page head does not
+detect every deletion or same-sized replacement, and neither completion nor
+failure deletes absent records.
 
 1. 验证 <code>/addfavor</code> 的 <code>val</code> 映射与未登录错误，确认默认收藏夹是否足够。
 2. 若要支持多文件夹，补抓文件夹列表、新建、删除和移动收藏的请求。

@@ -40,10 +40,24 @@ class NewComicSource extends ComicSource {
      * Returned values are plain JSON: comic.load returns an observation or a
      * failure; collection.load returns {items, next}, where next must be an
      * own property and only null ends traversal.
+     *
+     * Every branch that declares `load` MUST also declare `fieldSource`: the
+     * mapping of standard observation fields to where their values come from.
+     * The host never evaluates these values; it normalizes them into the
+     * branch's comparable label, which decides whether two observations may be
+     * compared. Allowed keys are exactly updatedAt, latestChapterId,
+     * chapterCount, recentChapterIds and sourceUnread, and the @day/@instant
+     * granularity suffix is allowed only on updatedAt. A missing declaration,
+     * an unknown key or a misplaced granularity makes the whole scan
+     * capability invalid (the source itself still loads).
      */
     scan = {
         primary: "comic",
         comic: {
+            fieldSource: {
+                updatedAt: "updated_at@instant",
+                latestChapterId: "comic.last_chapter.id",
+            },
             load: async (comicId, request) => ({
                 observation: {
                     update: {updatedAt: "2026-01-01"},
@@ -51,6 +65,10 @@ class NewComicSource extends ComicSource {
             }),
         },
         // collection: {
+        //     fieldSource: {
+        //         latestChapterId: "last_chapter.id",
+        //         sourceUnread: "is_new|full_is_new",
+        //     },
         //     load: async (collectionKey, cursor, request) => ({
         //         items: [],
         //         next: null,
@@ -565,34 +583,18 @@ class NewComicSource extends ComicSource {
             */
         },
         /**
-         * [Optional] optimized favorite update scan. Omit this capability for
-         * ordinary sources; App will use the normal detail result instead.
+         * The list-level `favorites.updateCheck` channel is RETIRED.
          *
-         * favoriteUpdate: {
-         *     state: {
-         *         // Include only sanitized values actually supplied by the source.
-         *         updatedAt: item.updated_at, // RFC3339 with timezone
-         *         latestChapterId: String(item.latest_chapter_id),
-         *         chapterCount: item.chapter_count,
-         *         recentChapterIds: item.recent_chapters.map(
-         *             (chapter) => String(chapter.id),
-         *         ),
-         *     },
-         *     sourceUnread: typeof item.is_unread === "boolean"
-         *         ? item.is_unread
-         *         : null,
-         * }
+         * New sources MUST NOT declare it. The current App no longer reads it;
+         * observations come from `scan` and are judged by the App itself. The
+         * channel survives only in sources published before this contract,
+         * because sources are distributed to devices running older App
+         * versions that still read it, and removing it there would take
+         * list-level observations away from those users.
          *
-         * Remove undefined/invalid fields rather than inventing placeholders.
-         * Exceptional marker-only escape hatch:
-         * favoriteUpdate: {marker: String(item.stable_full_identity)}
-         * Marker and canonical metadata JSON are each limited to 4096 UTF-8
-         * bytes, and metadata is diagnostic-only.
+         * If you are porting an old source, replace the updateCheck block with
+         * a `scan` capability plus its required `fieldSource` declaration.
          */
-        // updateCheck: {
-        //     scanInterval: 43200,
-        //     load: async (folderId) => ({comics, pageSize, total}),
-        // },
         /**
          * load comics with next page token
          * @param next {string | null} - next page token, null for first page

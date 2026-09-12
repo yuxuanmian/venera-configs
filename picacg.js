@@ -3,7 +3,7 @@ class Picacg extends ComicSource {
 
     key = "picacg"
 
-    version = "1.0.7"
+    version = "1.0.8"
 
     minAppVersion = "1.0.0"
 
@@ -326,6 +326,18 @@ class Picacg extends ComicSource {
     scan = {
         primary: 'comic',
         comic: {
+            // Contract C1/C3: one declaration per branch, beside `load`.  The
+            // keys are the standard observation fields; the values say where
+            // each value comes from in the source payload.  The host never
+            // parses these values — they only feed the comparable label.
+            //
+            // Granularity (Contract C4): the scan fixture returns both a full
+            // instant with an explicit offset and a date-only value, and the
+            // codec preserves whichever the site sends, so the declaration is
+            // the weaker of the two.  T062 confirms this against the live site.
+            fieldSource: {
+                updatedAt: 'updated_at@day',
+            },
             load: async (id, request) => {
                 if (typeof id !== 'string' || !id.trim() || typeof request !== 'function') {
                     return this._scanFailure({message: 'Picacg comic identity is invalid'})

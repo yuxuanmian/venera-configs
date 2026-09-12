@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.7"
+    version = "1.0.8"
 
     minAppVersion = "1.6.0"
 
@@ -441,6 +441,16 @@ class Manwa extends ComicSource {
     scan = {
         primary: 'collection',
         collection: {
+            // Contract C1/C3: one declaration per branch, beside `load`.  The
+            // keys are the standard observation fields; the values say where
+            // each value comes from in the source payload.  The host never
+            // parses these values — they only feed the comparable label, so a
+            // maintainer who changes the mapping changes this table in the same
+            // edit.  Mirrors doc/scan-contract-v1.md S1.3.
+            fieldSource: {
+                latestChapterId: 'last_chapter.id',
+                sourceUnread: 'is_new|full_is_new',
+            },
             load: async (collectionKey, cursor, request) => {
                 if (collectionKey !== 'default' || typeof request !== 'function') {
                     return this._scanFailure({message: 'Manwa collection identity is invalid'})

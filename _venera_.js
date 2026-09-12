@@ -922,32 +922,37 @@ let console = {
 };
 
 /**
- * An optional optimized favorite update scan may be declared as:
+ * The list-level `favorites.updateCheck` channel is RETIRED. New sources MUST
+ * NOT declare it, and the current App no longer reads it. It survives only in
+ * sources published before the retirement, because sources are distributed to
+ * devices running older App versions that still read it.
+ *
+ * Its legacy shape was:
  * favorites.updateCheck = {
  *   scanInterval: integer seconds,
  *   load: async (folderId) => ({comics, pageSize, total})
  * }.
- * The optimization and every favoriteUpdate field are optional. The load
- * result is one complete ordered snapshot; it is not a page loader.
  *
- * comic.favoriteUpdate may contain:
+ * Replace it with a `scan` capability plus its required `fieldSource`
+ * declaration. See doc/scan-contract-v1.md for the current contract.
+ *
+ * Comic.favoriteUpdate remains part of the Comic constructor for older hosts;
+ * it is not read by the current App. Its legacy shape was:
  * {
  *   state?: {
  *     updatedAt?: string,             // RFC3339 with an explicit timezone
  *     latestChapterId?: string,       // stable source-scoped ID
  *     chapterCount?: number,
- *     recentChapterIds?: string[],    // newest-first, at most 10 IDs
+ *     recentChapterIds?: string[],    // newest-first, at most 5 IDs
  *   },
  *   sourceUnread?: boolean | null,    // account/source fact, not content state
- *   marker?: string,                  // opaque fallback; hosts compare exact equality
+ *   marker?: string,                  // retired opaque fallback
  *   metadata?: object,                // diagnostics only; never comparison input
  * }
  *
- * Marker and canonical metadata JSON are each limited to 4096 UTF-8 bytes.
- * Source-specific concepts must be adapted before crossing this boundary.
  * Sources cannot provide isUpdated(old, current), and metadata must not
- * affect comparison. A marker-only result is an exceptional escape hatch;
- * conventional sources should provide sanitized state fields instead.
+ * affect comparison. Source-specific concepts must be adapted before crossing
+ * this boundary.
  */
 /**
  * Create a comic object
@@ -962,7 +967,7 @@ let console = {
  * @param language {string?}
  * @param favoriteId {string?} - Only set this field if the comic is from favorites page
  * @param stars {number?} - 0-5, double
- * @param favoriteUpdate {{state?: object, sourceUnread?: boolean | null, marker?: string, metadata?: object}?}
+ * @param favoriteUpdate {{state?: object, sourceUnread?: boolean | null, metadata?: object}?}
  * @constructor
  */
 function Comic({id, title, subtitle, subTitle, cover, tags, description, maxPage, language, favoriteId, stars, favoriteUpdate}) {
