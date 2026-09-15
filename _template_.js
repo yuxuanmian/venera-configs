@@ -466,6 +466,48 @@ class NewComicSource extends ComicSource {
 
         // enable tags suggestions
         enableTagsSuggestions: false,
+
+        /**
+         * [Optional] Tag semantic search capability.  Remove this declaration
+         * if the source does not implement it: a template instance without it
+         * must not produce a `tagSearch` property at all, and ordinary parsing
+         * and ordinary search must keep working unchanged.
+         *
+         * `value` is an opaque token produced by the source itself.  The host
+         * passes it back exactly: it is never trimmed, re-cased, namespace-joined,
+         * split or tokenized.  Declare ONE pagination form; if both are declared,
+         * the host uses `load`.
+         *
+         * Source maintainer obligations:
+         * - A single invocation must have a documented finite work bound that is
+         *   independent of the UI, e.g. "at most N candidate requests with at most
+         *   M concurrent".  Write the bound here.
+         * - Never keep scanning (or widen the bound) merely to fill the UI list;
+         *   the host owns buffering, de-duplication and appending.
+         * - If one invocation performs several requests, it must return either one
+         *   complete, ordered success or fail.  Never return partial comics, and
+         *   never advance the cursor on failure.  Bounded concurrency must keep
+         *   logical source order regardless of completion order.
+         * - Cancellation is host-private: these callbacks get no cancel argument
+         *   and no cancel global exists.
+         *
+         * tagSearch: {
+         *     // Page form: the end is exactly the explicit `maxPage`.  An empty
+         *     // `comics` before `maxPage` is a valid sparse window, not the end.
+         *     load: async (value, options, page) => ({
+         *         comics: [],
+         *         maxPage: 1,
+         *     }),
+         *     // Cursor form: `next` is owned by the source and opaque to the host,
+         *     // which only compares it for equality and checks for null.  `[]` plus
+         *     // a non-null `next` is valid, and a successful non-null `next` MUST
+         *     // advance past the input cursor.  Return null for the last window.
+         *     loadNext: async (value, options, next) => ({
+         *         comics: [],
+         *         next: null,
+         *     }),
+         * },
+         */
     }
 
     // favorite related

@@ -4,4 +4,6 @@ test/*
 !test/manwa_update_check_test.js
 !test/scan/
 !test/scan/**
+!test/semantic/
+!test/semantic/**
 tools/__pycache__/
