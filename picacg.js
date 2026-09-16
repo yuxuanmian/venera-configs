@@ -3,9 +3,9 @@ class Picacg extends ComicSource {
 
     key = "picacg"
 
-    version = "1.0.8"
+    version = "1.0.9"
 
-    minAppVersion = "1.0.0"
+    minAppVersion = "2.0.0"
 
     url = "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/picacg.js"
 
@@ -798,11 +798,14 @@ class Picacg extends ComicSource {
         }
     }
 
-    // Versioned opaque cursor for `search.tagSearch.loadNext`.  `null` starts
-    // at the ordinary first page.  A malformed, unsupported or wrongly typed
-    // cursor throws explicitly instead of silently restarting from page 1.
+    // Versioned opaque cursor for `search.tagSearch.loadNext`.  Only the JSON
+    // literal `null` starts at the ordinary first page; any other value --
+    // including `undefined` -- is malformed and throws explicitly instead of
+    // silently restarting from page 1.  The Host always emits the literal
+    // `null` for the first call (it interpolates `jsonEncode(null)` into the
+    // generated call), so `undefined` can only come from a non-Host caller.
     _tagSearchCursor = (next) => {
-        if (next === null || next === undefined) {
+        if (next === null) {
             return {nextPage: 1, maxPage: null}
         }
         let parsed = null
@@ -826,9 +829,12 @@ class Picacg extends ComicSource {
         return {nextPage: parsed.nextPage, maxPage: parsed.maxPage}
     }
 
-    // The endpoint reports `pages`.  Anything that is not a positive integer
-    // is treated as "no further page known", so a malformed value terminates
-    // the scan instead of allowing unbounded paging.
+    // The endpoint reports `pages`.  It is required metadata for the first
+    // page, which is fetched precisely to learn it: a missing, zero or
+    // non-integer value is malformed and makes the invocation fail explicitly.
+    // Silently treating it as "no further page" would truncate the scan and
+    // report a false finished state, which FR-021 (explicit metadata over
+    // inference) does not allow.
     _tagSearchMaxPage = (value) => Number.isInteger(value) && value >= 1 ? value : null
 
     /// 搜索
@@ -860,7 +866,13 @@ class Picacg extends ComicSource {
                     // it before any batch is scheduled.
                     const first = await this._searchRaw(value, options, nextPage)
                     collected.push({page: nextPage, docs: first.docs})
-                    maxPage = this._tagSearchMaxPage(first.maxPage)
+                    const learned = this._tagSearchMaxPage(first.maxPage)
+                    if (learned === null) {
+                        // Required pagination metadata is missing or malformed.
+                        // Fail loudly rather than silently reporting "finished".
+                        throw new Error('Invalid tag search pagination metadata')
+                    }
+                    maxPage = learned
                     scanned += 1
                     nextPage += 1
                 }

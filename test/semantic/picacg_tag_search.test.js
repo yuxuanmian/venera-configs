@@ -80,8 +80,9 @@ test('Picacg tagSearch keeps only raw tags exact matches', async () => {
     assert.equal(comics.some((comic) => comic.id === id), false, `${id} must not match`);
   }
 
-  // The mixed fixture only has two pages and page 1 was requested alone to
-  // learn `maxPage`, so the whole invocation never went above one request.
+  // The mixed fixture only has two pages, so page 1 was requested alone to
+  // learn `maxPage` and page 2 completed the scan: two requests in total, and
+  // never more than one of them in flight at a time.
   assert.deepEqual(harness.candidateCalls().map((call) => call.page), [1, 2]);
   assert.equal(harness.calls[0].inflightAtStart, 1);
   assert.equal(harness.peakInFlight, 1);
@@ -303,10 +304,10 @@ test('Picacg three concurrent 401s share one search login POST', async () => {
   const promise = loadNext(harness, {next: cursor(1, 3)});
   await flush();
   assert.equal(attempts.size, 3);
-  // Measured baseline before the search-local shared relogin promise existed:
-  // this exact fixture produced 3 auth/sign-in POSTs, one per concurrent 401
-  // (each login raced to saveData('token')).  The shared in-flight promise
-  // reduces that to 1.
+  // This is what the suite asserts today. The "3 logins before the fix" figure
+  // is a one-off development measurement on this same fixture (recorded in
+  // picacg.js); it is NOT re-derived here, because the shared promise already
+  // exists. Do not read this test as a before/after experiment.
   assert.equal(harness.loginPostCount, 1);
   // Login bodies (credentials) are never retained by the harness.
   assert(harness.loginCalls().every((call) => call.body === undefined && call.json === undefined));
@@ -366,4 +367,54 @@ test('Picacg ordinary search.load keeps its 1.0.8 parsing, order and maxPage', a
   assert.equal(comics.length, page.docs.length);
   const categoryOnly = comics.find((comic) => comic.id === 'categories-only-1');
   assert.deepEqual(categoryOnly.tags, ['Fate']);
+});
+
+test('Picacg a second 401 after a successful relogin rejects the whole invocation', async () => {
+  let candidateAttempts = 0;
+  const harness = make((call) => {
+    if (call.kind === 'login') return authResponse('synthetic-rotated-token');
+    candidateAttempts += 1;
+    // Recovery succeeds, but the retried request is still unauthorized.
+    return failureResponse(401);
+  });
+
+  // The whole invocation must fail: no partial comics and no output cursor.
+  await assert.rejects(() => loadNext(harness, {next: cursor(1, 1)}));
+
+  assert.equal(harness.loginPostCount, 1, 'exactly one recovery attempt');
+  assert.equal(candidateAttempts, 2, 'the original 401 plus exactly one retry');
+  assert.equal(
+    harness.source._searchReloginPending,
+    null,
+    'a failed recovery must not leave a stale shared promise behind',
+  );
+});
+
+test('Picacg tagSearch rejects an undefined cursor instead of restarting at page 1', async () => {
+  // The Host always emits the literal `null` for the first call, so `undefined`
+  // is a non-Host caller mistake. Contract P requires a malformed cursor to
+  // fail explicitly and never silently reset to page 1.
+  const harness = make(() => ok(searchPageBody([], 3)));
+  await assert.rejects(
+    () => harness.source.search.tagSearch.loadNext(VALUE, DEFAULT_OPTIONS, undefined),
+    /Invalid tag search cursor/,
+  );
+  assert.equal(harness.candidateCalls().length, 0, 'no request may be issued');
+});
+
+test('Picacg tagSearch rejects missing or non-integer pagination metadata', async () => {
+  for (const pages of [undefined, null, 0, -1, 2.5, '3']) {
+    const harness = make(() => ok(searchPageBody([rawComic('x', {tags: [VALUE]})], pages)));
+    await assert.rejects(
+      () => loadNext(harness),
+      /Invalid tag search pagination metadata/,
+      `pages=${String(pages)} must not silently terminate the scan`,
+    );
+  }
+});
+
+test('Picacg tagSearch rejects an unparseable successful body', async () => {
+  const harness = make(() => ({status: 200, headers: {}, body: 'not json'}));
+  await assert.rejects(() => loadNext(harness));
+  assert.equal(harness.loginPostCount, 0, 'an invalid body is not an auth problem');
 });

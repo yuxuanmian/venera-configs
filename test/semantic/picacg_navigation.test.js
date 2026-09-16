@@ -91,3 +91,27 @@ test('Picacg onClickTag never trims or re-cases the keyword', () => {
   assert.equal(onClickTag('Categories', value).keyword, value);
   assert.equal(onClickTag('Chinese Team', value).keyword, value);
 });
+
+test('Picacg config version and index.json entry stay in sync', () => {
+  // The release gate (T058/T072) is satisfied, so the config now declares the
+  // App version floor that carries the `tagSearch` action. These two places
+  // must move together.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const {source} = make();
+  const index = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', '..', 'index.json'), 'utf8'),
+  );
+  const entry = Object.values(index).find(
+    (candidate) => candidate && candidate.fileName === 'picacg.js',
+  );
+  assert.ok(entry, 'index.json must list picacg.js');
+
+  assert.equal(entry.version, source.version);
+  assert.equal(source.version, '1.0.9');
+  assert.equal(
+    source.minAppVersion,
+    '2.0.0',
+    'older Apps must be refused the unknown tagSearch action',
+  );
+});
