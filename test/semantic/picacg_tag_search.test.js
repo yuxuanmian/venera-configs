@@ -17,12 +17,24 @@ const {
   deferred,
   flush,
   toPlain,
+  sharedSemanticDefaults,
 } = require('./source_harness');
 
 const BASE_URL = 'https://pica.example.invalid';
 const VALUE = 'Fate';
 const DEFAULT_OPTIONS = ['dd-New to old'];
 const fixture = loadFixture('picacg_search_responses.json');
+
+// The 009 minimum useful result threshold comes from the shared source library,
+// so this suite fails if a source-side default is renamed or removed instead of
+// silently testing against a local copy of the number.
+const MIN_RESULTS = sharedSemanticDefaults().SEMANTIC_SEARCH_MIN_RESULTS_PER_LOAD;
+
+assert.equal(
+  typeof MIN_RESULTS,
+  'number',
+  'the shared library must declare SEMANTIC_SEARCH_MIN_RESULTS_PER_LOAD',
+);
 
 const data = () => ({
   account: ['user@example.test', 'synthetic-password'],
@@ -31,6 +43,13 @@ const data = () => ({
 });
 
 const make = (responder) => loadSource('picacg.js', 'Picacg', {data: data(), responder});
+
+// `count` distinct exact-match documents, so a page can be sized relative to the
+// shared threshold instead of to a hard-coded number.
+const exactDocs = (prefix, count) => Array.from(
+  {length: count},
+  (_, index) => rawComic(`${prefix}-${index}`, {tags: [VALUE]}),
+);
 
 // Serves the deterministic mixed candidate fixture page by page.
 const fixtureResponder = (call) => {
@@ -80,12 +99,181 @@ test('Picacg tagSearch keeps only raw tags exact matches', async () => {
     assert.equal(comics.some((comic) => comic.id === id), false, `${id} must not match`);
   }
 
-  // The mixed fixture only has two pages, so page 1 was requested alone to
-  // learn `maxPage` and page 2 completed the scan: two requests in total, and
-  // never more than one of them in flight at a time.
+  // The mixed fixture yields three exact matches on page 1 and one more on
+  // page 2, which stays below the shared threshold, so page 1 was requested
+  // alone to learn `maxPage` and page 2 completed the scan: two requests in
+  // total, and never more than one of them in flight at a time.
   assert.deepEqual(harness.candidateCalls().map((call) => call.page), [1, 2]);
   assert.equal(harness.calls[0].inflightAtStart, 1);
   assert.equal(harness.peakInFlight, 1);
+});
+
+test('Picacg tagSearch returns after one request when page 1 already has enough exact matches', async () => {
+  const pages = [];
+  const harness = make((call) => {
+    if (call.kind === 'login') return authResponse();
+    pages.push(call.page);
+    // Page 1 is also the invocation that has to learn `maxPage`, so this covers
+    // the single-page metadata round trip and the threshold stop at once.
+    return ok(searchPageBody(exactDocs(`page-${call.page}`, MIN_RESULTS), 20));
+  });
+
+  const result = await loadNext(harness);
+
+  // One round trip: pages 2..6 are never scheduled.
+  assert.deepEqual(pages, [1]);
+  assert.equal(harness.candidateCalls().length, 1);
+  assert.equal(toPlain(result.comics).length, MIN_RESULTS);
+  // The cursor points at the first page that was NOT scanned, and the pending
+  // range is preserved for the next invocation.
+  assert.deepEqual(JSON.parse(result.next), {v: 1, nextPage: 2, maxPage: 20});
+});
+
+test('Picacg tagSearch keeps scanning while the accumulated exact results stay below the threshold', async () => {
+  const pages = [];
+  const harness = make((call) => {
+    if (call.kind === 'login') return authResponse();
+    pages.push(call.page);
+    // One exact match per page is not the result set a user asked for, so the
+    // sparse scan must keep spending the bounded budget instead of returning
+    // the first non-empty window.
+    return ok(searchPageBody(exactDocs(`page-${call.page}`, 1), 20));
+  });
+
+  const result = await loadNext(harness);
+
+  assert.deepEqual(pages, [1, 2, 3, 4, 5, 6]);
+  assert.equal(harness.peakInFlight, 3);
+  assert.equal(toPlain(result.comics).length, 6);
+  // The budget, not the threshold, ended this invocation.
+  assert.deepEqual(JSON.parse(result.next), {v: 1, nextPage: 7, maxPage: 20});
+});
+
+test('Picacg tagSearch ignores a duplicated _id when counting towards the threshold', async () => {
+  const harness = make((call) => {
+    if (call.kind === 'login') return authResponse();
+    if (call.page === 1) {
+      // MIN_RESULTS documents, but the last one repeats an earlier `_id`, so
+      // only MIN_RESULTS - 1 distinct exact matches were accumulated.
+      const docs = exactDocs('page-1', MIN_RESULTS - 1);
+      docs.push(rawComic('page-1-0', {title: 'Dropped duplicate', tags: [VALUE]}));
+      return ok(searchPageBody(docs, 20));
+    }
+    return ok(searchPageBody([], 20));
+  });
+
+  const result = await loadNext(harness);
+
+  // The duplicate must not satisfy the threshold, so the scan continues.
+  assert.equal(harness.candidateCalls().length, 6);
+  const comics = toPlain(result.comics);
+  assert.equal(comics.length, MIN_RESULTS - 1);
+  // First occurrence wins, and the duplicate never becomes a second comic.
+  assert.equal(comics.filter((comic) => comic.id === 'page-1-0').length, 1);
+  assert.equal(
+    comics.find((comic) => comic.id === 'page-1-0').title,
+    'Comic page-1-0',
+  );
+});
+
+test('Picacg tagSearch never requests past a tail batch narrower than the concurrency', async () => {
+  const pages = [];
+  const harness = make((call) => {
+    if (call.kind === 'login') return authResponse();
+    pages.push(call.page);
+    return ok(searchPageBody([], 5));
+  });
+
+  // `maxPage` is already known, so the last batch is clamped to the two real
+  // pages that remain instead of requesting a page 6 that does not exist.
+  const result = await loadNext(harness, {next: cursor(4, 5)});
+
+  assert.deepEqual(pages, [4, 5]);
+  assert(harness.candidateCalls().every((call) => call.page <= 5));
+  assert.deepEqual(JSON.parse(result.next), null);
+  assert.deepEqual(toPlain(result.comics), []);
+});
+
+test('Picacg tagSearch returns the real results when the budget ends below the threshold', async () => {
+  const harness = make((call) => call.kind === 'login'
+    ? authResponse()
+    : ok(searchPageBody(exactDocs(`page-${call.page}`, 1), 20)));
+
+  const result = await loadNext(harness);
+
+  // Nothing is scanned past the 6-page budget just to fill the threshold.
+  assert.equal(harness.candidateCalls().length, 6);
+  assert(harness.candidateCalls().every((call) => call.page <= 20));
+  assert.equal(toPlain(result.comics).length, 6);
+});
+
+test('Picacg tagSearch emits an identity-less match exactly once per page across batches', async () => {
+  // Documents without an `_id` cannot be de-duplicated by identity, so a
+  // re-walk of earlier batches would emit them again on every later batch and
+  // count them towards the threshold more than once. One match per page over
+  // three committed pages is the regression that proves each batch is consumed
+  // once, in page order.
+  const pages = [];
+  const makePage = (page) => {
+    // The non-matching document also has no `_id`, so nothing here can be
+    // filtered out by identity.
+    const docs = [
+      rawComic(undefined, {title: `Untagged page ${page}`, tags: ['Other']}),
+      rawComic(undefined, {title: `Matched page ${page}`, tags: [VALUE]}),
+    ];
+    delete docs[0]._id;
+    delete docs[1]._id;
+    return docs;
+  };
+  const harness = make((call) => {
+    if (call.kind === 'login') return authResponse();
+    pages.push(call.page);
+    return ok(searchPageBody(makePage(call.page), 20));
+  });
+
+  const result = await loadNext(harness);
+  const comics = toPlain(result.comics);
+
+  // The 6-page budget ends the scan; the threshold is never reached by the
+  // identity-less matches being counted twice.
+  assert.deepEqual(pages, [1, 2, 3, 4, 5, 6]);
+  assert.equal(comics.length, 6);
+  assert.deepEqual(
+    comics.map((comic) => comic.title),
+    ['Matched page 1', 'Matched page 2', 'Matched page 3', 'Matched page 4',
+      'Matched page 5', 'Matched page 6'],
+  );
+  // Stable page order, no duplicates, and no non-matching document.
+  assert.equal(new Set(comics.map((comic) => comic.title)).size, 6);
+  assert.equal(comics.some((comic) => comic.title.startsWith('Untagged')), false);
+});
+
+test('Picacg tagSearch reports every committed document exactly once in a full scan', async () => {
+  // One distinct match per page never reaches the threshold, so all six pages
+  // and all three batches are committed and every batch really is merged: each
+  // committed document appears exactly once, in ascending page order, and the
+  // non-matching documents of the same pages are never emitted.
+  const harness = make((call) => {
+    if (call.kind === 'login') return authResponse();
+    return ok(searchPageBody([
+      rawComic(`page-${call.page}-miss`, {tags: ['Other']}),
+      rawComic(`page-${call.page}-hit`, {tags: [VALUE]}),
+    ], 20));
+  });
+
+  const result = await loadNext(harness);
+  const comics = toPlain(result.comics);
+
+  assert.equal(harness.candidateCalls().length, 6);
+  assert.equal(harness.peakInFlight, 3);
+  assert.deepEqual(
+    comics.map((comic) => comic.id),
+    ['page-1-hit', 'page-2-hit', 'page-3-hit', 'page-4-hit', 'page-5-hit',
+      'page-6-hit'],
+  );
+  assert.equal(new Set(comics.map((comic) => comic.id)).size, 6);
+  assert.equal(comics.some((comic) => comic.id.endsWith('-miss')), false);
+  assert.deepEqual(JSON.parse(result.next), {v: 1, nextPage: 7, maxPage: 20});
 });
 
 test('Picacg tagSearch learns maxPage from page 1 alone then batches at most 3', async () => {

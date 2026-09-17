@@ -3,7 +3,7 @@ class Picacg extends ComicSource {
 
     key = "picacg"
 
-    version = "1.0.9"
+    version = "1.0.10"
 
     minAppVersion = "2.0.0"
 
@@ -837,6 +837,36 @@ class Picacg extends ComicSource {
     // inference) does not allow.
     _tagSearchMaxPage = (value) => Number.isInteger(value) && value >= 1 ? value : null
 
+    // Exact-match accumulation for one committed batch of a
+    // `tagSearch.loadNext` invocation.
+    //
+    // It is given ONLY the raw documents that this batch newly fetched, in
+    // ascending logical page order, so every document of the invocation is
+    // visited exactly once: a batch can neither re-count nor re-emit a document
+    // from an earlier batch.  That matters for raw documents without an `_id` --
+    // they cannot be de-duplicated by identity, so re-walking earlier batches
+    // would have returned them again on every later batch and counted them
+    // towards the early-return threshold more than once.
+    //
+    // Contract P predicate, unchanged by the 009 revision: only the raw `tags`
+    // array is consulted (`raw.tags.includes(value)`) and the check runs before
+    // `parseComic`, which merges raw tags with categories for presentation.
+    // There is no trim, no case conversion and no category or display-label
+    // fallback.  Documents without an identity are kept, exactly once, so the
+    // identity contract is not silently changed here.
+    _collectExactMatches = (value, docs, seen, comics) => {
+        const before = comics.length
+        docs.forEach(raw => {
+            if (!Array.isArray(raw.tags) || !raw.tags.includes(value)) return
+            if (raw._id !== undefined && raw._id !== null) {
+                if (seen.has(raw._id)) return
+                seen.add(raw._id)
+            }
+            comics.push(this.parseComic(raw))
+        })
+        return comics.length - before
+    }
+
     /// 搜索
     search = {
         load: async (keyword, options, page) => {
@@ -854,18 +884,34 @@ class Picacg extends ComicSource {
         // cursor; the Host never decodes it.  Source work per invocation is
         // bounded to 6 candidate pages with at most 3 concurrent requests, and
         // nothing is returned unless every scheduled request succeeded.
+        //
+        // 009 revision: the invocation may end earlier than the 6-page budget
+        // once it has accumulated the shared minimum useful result count
+        // (`SEMANTIC_SEARCH_MIN_RESULTS_PER_LOAD`) of exact, stable,
+        // de-duplicated matches.  The threshold only ever stops work earlier;
+        // it never authorizes an extra page, a wider predicate or a longer
+        // scan, and it is unrelated to the Host's UI append limit.  The
+        // returned cursor is the first page that was NOT scanned, so a later
+        // invocation resumes exactly there (the Host de-duplicates comics by
+        // identity, so re-returning an already seen one is safe while skipping
+        // an unscanned page would silently drop results).
         tagSearch: {
             loadNext: async (value, options, next) => {
                 const cursor = this._tagSearchCursor(next)
-                const collected = []
                 let maxPage = cursor.maxPage
                 let nextPage = cursor.nextPage
                 let scanned = 0
+                // Exact-match accumulation state for the whole invocation.
+                // Requests are consumed batch by batch into `comics` in
+                // ascending page order, so nothing needs to be buffered and no
+                // document is ever visited twice.
+                const seen = new Set()
+                const comics = []
+                let matched = 0
                 if (maxPage === null) {
                     // maxPage is unknown, so page 1 is requested alone to learn
                     // it before any batch is scheduled.
                     const first = await this._searchRaw(value, options, nextPage)
-                    collected.push({page: nextPage, docs: first.docs})
                     const learned = this._tagSearchMaxPage(first.maxPage)
                     if (learned === null) {
                         // Required pagination metadata is missing or malformed.
@@ -875,11 +921,18 @@ class Picacg extends ComicSource {
                     maxPage = learned
                     scanned += 1
                     nextPage += 1
+                    // Page 1 committed successfully, so it is part of the
+                    // invocation's atomic result set and may satisfy the
+                    // threshold on its own. When it does, no batch is
+                    // scheduled at all: the loop below is entered only while
+                    // the accumulated count is still short of the threshold.
+                    matched += this._collectExactMatches(value, first.docs, seen, comics)
                 }
-                while (maxPage !== null && scanned < 6 && nextPage <= maxPage) {
+                while (matched < SEMANTIC_SEARCH_MIN_RESULTS_PER_LOAD
+                    && maxPage !== null && scanned < 6 && nextPage <= maxPage) {
                     // `Promise.all` over an ascending page array: completion
-                    // order can be arbitrary while the merge below stays in
-                    // ascending logical page order.
+                    // order can be arbitrary while this batch's documents are
+                    // consumed in ascending page order.
                     const batch = []
                     const size = Math.min(3, 6 - scanned, maxPage - nextPage + 1)
                     for (let index = 0; index < size; index++) {
@@ -888,30 +941,20 @@ class Picacg extends ComicSource {
                     const results = await Promise.all(
                         batch.map(page => this._searchRaw(value, options, page))
                     )
-                    results.forEach((result, index) => {
-                        collected.push({page: batch[index], docs: result.docs})
+                    // The whole batch succeeded, so it may be committed now.
+                    // A member failure above rejects before this point and
+                    // leaves `nextPage` untouched for the caller to replay.
+                    // `results` is page-ascending by construction, and only
+                    // these freshly fetched documents are consumed.
+                    results.forEach(result => {
+                        matched += this._collectExactMatches(value, result.docs, seen, comics)
                     })
+                    // Advance the scanned budget only after this batch has been
+                    // published, so `scanned < 6` still admits the full 6-page
+                    // budget for a sparse invocation.
                     scanned += size
                     nextPage += size
                 }
-                const seen = new Set()
-                const comics = []
-                collected.forEach(entry => {
-                    entry.docs.forEach(raw => {
-                        // Contract P exact predicate: raw `tags` only, applied
-                        // before `parseComic`, which merges raw tags and
-                        // categories for presentation.  No trim, no case
-                        // conversion, no category or display-label fallback.
-                        if (!Array.isArray(raw.tags) || !raw.tags.includes(value)) return
-                        // Stable de-duplication by raw `_id`, first occurrence
-                        // wins.  Documents without an identity are kept.
-                        if (raw._id !== undefined && raw._id !== null) {
-                            if (seen.has(raw._id)) return
-                            seen.add(raw._id)
-                        }
-                        comics.push(this.parseComic(raw))
-                    })
-                })
                 const more = maxPage !== null && nextPage <= maxPage
                 return {
                     comics: comics,

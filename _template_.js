@@ -484,6 +484,12 @@ class NewComicSource extends ComicSource {
          *   M concurrent".  Write the bound here.
          * - Never keep scanning (or widen the bound) merely to fill the UI list;
          *   the host owns buffering, de-duplication and appending.
+         * - The shared library declares `SEMANTIC_SEARCH_MIN_RESULTS_PER_LOAD`
+         *   (currently 6).  A source that scans candidates in batches may stop a
+         *   load early once it has accumulated that many stable, de-duplicated
+         *   exact matches, and MUST otherwise continue to its declared bound or
+         *   the real end.  The number is source-side policy: it never authorizes
+         *   a wider scan, and it is unrelated to the host's append limit.
          * - If one invocation performs several requests, it must return either one
          *   complete, ordered success or fail.  Never return partial comics, and
          *   never advance the cursor on failure.  Bounded concurrency must keep

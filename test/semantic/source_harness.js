@@ -23,6 +23,32 @@ const vm = require('node:vm');
 const ADVANCED_SEARCH_PATH = '/comics/advanced-search';
 const LOGIN_PATH = '/auth/sign-in';
 
+// The shared source library is the canonical declaration of the source-side
+// semantic defaults, and the host injects it into every source runtime.  The
+// harness therefore reads the value out of that same file instead of
+// re-declaring it, so a change to the shared default reaches these tests
+// without a second copy to keep in sync.
+//
+// Only the constant is lifted out (rather than evaluating the whole library):
+// the library declares `Network`, `createUuid` and the other host-backed
+// globals itself, and the harness must keep supplying those.
+const SHARED_LIBRARY = fs.readFileSync(
+  path.join(__dirname, '..', '..', '_venera_.js'),
+  'utf8',
+);
+
+const sharedSemanticDefaults = () => {
+  const defaults = {};
+  const pattern = /^\s*const\s+(SEMANTIC_SEARCH_[A-Z_]+)\s*=\s*(\d+)\s*;?\s*$/gm;
+  for (const match of SHARED_LIBRARY.matchAll(pattern)) {
+    defaults[match[1]] = Number(match[2]);
+  }
+  if (Object.keys(defaults).length === 0) {
+    throw new Error('the shared source library must declare its semantic search default');
+  }
+  return defaults;
+};
+
 // Minimal stand-in for the Host `Comic` value object.
 class Comic {
   constructor(value) {
@@ -179,6 +205,9 @@ const loadSource = (fileName, className, {data = {}, responder} = {}) => {
     setTimeout,
     clearTimeout,
     setImmediate,
+    // Shared source-side defaults, taken verbatim from the canonical library
+    // file the host injects ahead of every source.
+    ...sharedSemanticDefaults(),
   };
   vm.runInNewContext(`${sourceCode}\nthis.__Source = ${className};`, context);
   const source = new context.__Source();
@@ -223,4 +252,5 @@ module.exports = {
   deferred,
   flush,
   toPlain,
+  sharedSemanticDefaults,
 };

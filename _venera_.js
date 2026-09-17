@@ -12,6 +12,27 @@ This library provides a set of APIs for interacting with the Venera app.
  */
 
 /**
+ * Default minimum number of useful results a semantic search source should
+ * accumulate before it may end one invocation early.
+ *
+ * This is a SOURCE-SIDE scan-policy default, declared by the shared source
+ * library so every source reuses one number instead of inventing its own. It is
+ * deliberately independent of the host's UI presentation limit (the host's
+ * `semanticSearchAppendLimit` is 20 and only bounds how many comics the page
+ * appends at a time): a source may stop work earlier than its own declared work
+ * budget once it has accumulated this many stable, de-duplicated, exact
+ * matches, but it may never scan more, or more widely, to reach this number.
+ *
+ * A source that needs a different number declares it inside its own
+ * `search.tagSearch` implementation; nothing about the host contract changes.
+ *
+ * @global
+ * @type {number}
+ * @since 1.6.0
+ */
+const SEMANTIC_SEARCH_MIN_RESULTS_PER_LOAD = 6;
+
+/**
  * Set a timeout to execute a callback function after a specified delay.
  * @param callback {Function}
  * @param delay {number} - delay in milliseconds
