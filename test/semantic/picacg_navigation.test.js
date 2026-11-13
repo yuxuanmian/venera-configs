@@ -108,8 +108,7 @@ test('Picacg config version and index.json entry stay in sync', () => {
   assert.ok(entry, 'index.json must list picacg.js');
 
   assert.equal(entry.version, source.version);
-  // 016 bumps the source version for the opt-in favorites scan.
-  assert.equal(source.version, '1.0.11');
+  assert.equal(source.version, '1.0.12');
   assert.equal(
     source.minAppVersion,
     '2.0.0',

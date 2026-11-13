@@ -98,6 +98,11 @@ mutually exclusive and share the same ID validation. Picacg uses the
 collection branch on those hosts and retains its per-comic branch on older
 hosts. Manwa keeps the observation-only page contract.
 
+Picacg 1.0.12 fetches the first and verification pages separately. A later
+data load may fetch up to two adjacent HTTP pages concurrently and return
+their items in page order as one host batch. If either page fails, the whole
+batch fails; earlier committed batches are retained.
+
 Only the standard facts `updatedAt`, `latestChapterId`, `chapterCount`,
 `recentChapterIds`, and `sourceUnread` are accepted. Do not return markers,
 baselines, metadata, `isUpdated`, `hasNewUpdate`, credentials, response bodies,

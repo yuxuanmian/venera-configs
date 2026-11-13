@@ -148,6 +148,47 @@ test('Picacg treats a legal empty collection explicitly', async () => {
     Number(new URL(call.url).searchParams.get('page'))), [1, 1]);
 });
 
+test('Picacg starts two adjacent pages together and emits them in page order', async () => {
+  let releaseSecond;
+  const second = new Promise((resolve) => { releaseSecond = resolve; });
+  const completed = [];
+  const harness = make({
+    handler: async ({url}) => {
+      const page = Number(new URL(url).searchParams.get('page'));
+      if (page === 2) await second;
+      completed.push(page);
+      return {status: 200, body: favoriteBody([comic(`id-${page}`, page)], {page, pages: 4})};
+    },
+  });
+  const scan = collect(harness);
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(completed, [1, 3]);
+  } finally {
+    releaseSecond();
+  }
+  const result = await scan;
+  assert.deepEqual(result.items.map((item) => item.comicId), ['id-1', 'id-2', 'id-3', 'id-4']);
+  assert.deepEqual(completed, [1, 3, 2, 4, 1]);
+});
+
+test('Picacg keeps earlier batches and stops after a failed concurrent page', async () => {
+  const pages = [];
+  const harness = make({
+    handler: async ({url}) => {
+      const page = Number(new URL(url).searchParams.get('page'));
+      pages.push(page);
+      return page === 3
+        ? {status: 429, body: ''}
+        : {status: 200, body: favoriteBody([comic(`id-${page}`, page)], {page, pages: 5})};
+    },
+  });
+  const result = await collect(harness);
+  assert.equal(result.failure.httpStatus, 429);
+  assert.deepEqual(result.items.map((item) => item.comicId), ['id-1']);
+  assert.deepEqual(pages, [1, 2, 3]);
+});
+
 test('Picacg accepts optional page and limit metadata, including numeric strings', async (t) => {
   for (const [name, metadata] of [
     ['missing', {pages: 1}],

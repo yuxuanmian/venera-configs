@@ -3,7 +3,7 @@ class Picacg extends ComicSource {
 
     key = "picacg"
 
-    version = "1.0.11"
+    version = "1.0.12"
 
     minAppVersion = "2.0.0"
 
@@ -470,6 +470,28 @@ class Picacg extends ComicSource {
         && left.length === right.length
         && left.every((value, index) => value === right[index])
 
+    // The first page fixes the range. Later loads request at most two
+    // adjacent pages and return one batch to the host for ordered validation.
+    _scanFetchFavoriteBatch = async (state, request) => {
+        const page = state.phase === 'page' ? state.page : 1
+        if (state.phase !== 'page') {
+            return this._scanFetchFavoritePage(page, request, state.phase !== 'verify')
+        }
+        const pageNumbers = page < state.pages ? [page, page + 1] : [page]
+        const results = await Promise.all(pageNumbers.map(
+            (number) => this._scanFetchFavoritePage(number, request, true),
+        ))
+        const items = []
+        for (const result of results) {
+            if (!result.ok) return result
+            if (result.pages !== state.pages) {
+                return this._scanFailure({message: 'Picacg favorites page count changed'})
+            }
+            items.push(...result.items)
+        }
+        return {ok: true, items, pages: state.pages, lastPage: pageNumbers[pageNumbers.length - 1]}
+    }
+
     scan = (() => {
         const comic = {
             // Contract C1/C3: one declaration per branch, beside `load`.  The
@@ -547,12 +569,7 @@ class Picacg extends ComicSource {
                     if (!state) {
                         return this._scanFailure({message: 'Picacg scan cursor was invalid'})
                     }
-                    const page = state.phase === 'page' ? state.page : 1
-                    const result = await this._scanFetchFavoritePage(
-                        page,
-                        request,
-                        state.phase !== 'verify',
-                    )
+                    const result = await this._scanFetchFavoriteBatch(state, request)
                     if (!result || !result.ok) return result
                     const ids = result.items.map((item) => item.comicId)
                     if (state.phase === 'verify') {
@@ -562,9 +579,12 @@ class Picacg extends ComicSource {
                         }
                         return {items: [], next: null}
                     }
-                    if (state.phase === 'page' && result.pages !== state.pages) {
-                        return this._scanFailure({message: 'Picacg favorites page count changed'})
+                    // The host's scope limit counts loads, not HTTP pages.
+                    // Keep the original ceiling including the final verification.
+                    if (result.pages >= 4096) {
+                        return this._scanFailure({message: 'Picacg favorites exceeded the scan page limit'})
                     }
+                    const page = result.lastPage ?? 1
                     const headIds = state.phase === 'first' ? [...ids] : state.headIds
                     const next = result.pages > page
                         ? {
