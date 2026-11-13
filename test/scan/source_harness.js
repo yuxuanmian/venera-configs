@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const loadSource = (fileName, className, {data = {}, request} = {}) => {
+const loadSource = (fileName, className, {data = {}, request, globals = {}} = {}) => {
   const sourceCode = fs.readFileSync(path.join(__dirname, '..', '..', fileName), 'utf8');
   class ComicSource {
     constructor() {
@@ -48,6 +48,7 @@ const loadSource = (fileName, className, {data = {}, request} = {}) => {
     Date,
     setTimeout,
     clearTimeout,
+    ...globals,
   };
   vm.runInNewContext(`${sourceCode}\nthis.__Source = ${className};`, context);
   const source = new context.__Source();

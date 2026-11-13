@@ -3,7 +3,7 @@ class Picacg extends ComicSource {
 
     key = "picacg"
 
-    version = "1.0.10"
+    version = "1.0.11"
 
     minAppVersion = "2.0.0"
 
@@ -157,7 +157,7 @@ class Picacg extends ComicSource {
                 ok: true,
                 response: await request({
                     method,
-                    url: `${this.loadSetting('base_url')}/${path}`,
+                    url: `${this.loadSetting('base_url') || Picacg.defaultApiUrl}/${path}`,
                     headers: this.buildHeaders(method, path, token),
                     ...(body === undefined ? {} : {body}),
                 }),
@@ -262,12 +262,11 @@ class Picacg extends ComicSource {
         }
     }
 
-    _scanGetComic = async (comicId, request) => {
+    _scanGetPath = async (path, request) => {
         let state = this._scanSyncAuthState()
         const account = state.accountSnapshot ? [...state.accountSnapshot] : null
         const generation = state.generation
         const token = state.tokenSnapshot
-        const path = `comics/${encodeURIComponent(comicId)}`
         const firstResult = await this._scanRequest(request, 'GET', path, token)
         if (!firstResult.ok) return firstResult
         const first = firstResult.response
@@ -323,9 +322,156 @@ class Picacg extends ComicSource {
         return this._scanRequest(request, 'GET', path, state.tokenSnapshot)
     }
 
-    scan = {
-        primary: 'comic',
-        comic: {
+    _scanGetComic = (comicId, request) =>
+        this._scanGetPath(`comics/${encodeURIComponent(comicId)}`, request)
+
+    _scanFavoriteId = (value) => {
+        if (typeof value !== 'string') return undefined
+        const text = value.trim()
+        return text && !text.includes('\0') ? text : undefined
+    }
+
+    _scanFavoriteHeadIds = (value) => {
+        if (!Array.isArray(value)) return undefined
+        const ids = []
+        const seen = new Set()
+        for (const raw of value) {
+            const id = this._scanFavoriteId(raw)
+            if (!id || seen.has(id)) return undefined
+            seen.add(id)
+            ids.push(id)
+        }
+        return ids
+    }
+
+    _scanFavoriteCursor = (cursor) => {
+        if (cursor === null) return {phase: 'first'}
+        if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return undefined
+        const keys = Object.keys(cursor)
+        if (cursor.phase === 'page'
+            && keys.length === 4
+            && keys.includes('phase')
+            && keys.includes('page')
+            && keys.includes('pages')
+            && keys.includes('headIds')
+            && Number.isSafeInteger(cursor.page)
+            && Number.isSafeInteger(cursor.pages)
+            && cursor.pages >= 2
+            && cursor.page >= 2
+            && cursor.page <= cursor.pages) {
+            const headIds = this._scanFavoriteHeadIds(cursor.headIds)
+            return headIds
+                ? {phase: 'page', page: cursor.page, pages: cursor.pages, headIds}
+                : undefined
+        }
+        if (cursor.phase === 'verify'
+            && keys.length === 3
+            && keys.includes('phase')
+            && keys.includes('pages')
+            && keys.includes('headIds')
+            && Number.isSafeInteger(cursor.pages)
+            && cursor.pages >= 1) {
+            const headIds = this._scanFavoriteHeadIds(cursor.headIds)
+            return headIds
+                ? {phase: 'verify', pages: cursor.pages, headIds}
+                : undefined
+        }
+        return undefined
+    }
+
+    _scanFetchFavoritePage = async (page, request, includeObservations) => {
+        const path = `users/favourite?page=${page}&s=dd`
+        const result = await this._scanGetPath(path, request)
+        if (!result || !result.ok) {
+            return result && result.failure
+                ? result.failure
+                : this._scanFailure({message: 'Picacg favorites request failed'})
+        }
+        const response = result.response
+        if (!response || response.status !== 200) {
+            return this._scanFailure({
+                httpStatus: response && response.status,
+                message: 'Picacg favorites request failed',
+            })
+        }
+        let data
+        try {
+            data = JSON.parse(response.body)
+        } catch (_) {
+            return this._scanFailure({message: 'Picacg favorites response was invalid'})
+        }
+        const comics = data && data.data && data.data.comics
+        if (!comics || typeof comics !== 'object' || Array.isArray(comics)
+            || !Array.isArray(comics.docs)
+            || !Number.isSafeInteger(comics.pages)
+            || comics.pages < 0) {
+            return this._scanFailure({message: 'Picacg favorites page was invalid'})
+        }
+        const pages = comics.pages === 0 ? 1 : comics.pages
+        if (page > pages
+            || (comics.page !== undefined
+                && (typeof comics.page !== 'number'
+                    && typeof comics.page !== 'string'
+                    || !Number.isSafeInteger(Number(comics.page))
+                    || Number(comics.page) !== page))
+            || (comics.pages === 0 && comics.docs.length !== 0)
+            || (comics.pages > 1 && comics.docs.length === 0)) {
+            return this._scanFailure({message: 'Picacg favorites pagination was inconsistent'})
+        }
+        const limit = comics.limit === undefined ? undefined : Number(comics.limit)
+        if (comics.limit !== undefined
+            && ((typeof comics.limit !== 'number' && typeof comics.limit !== 'string')
+                || !Number.isSafeInteger(limit)
+                || limit < 0
+                || comics.docs.length > limit)) {
+            return this._scanFailure({message: 'Picacg favorites page limit was inconsistent'})
+        }
+
+        const items = []
+        const ids = new Set()
+        for (const comic of comics.docs) {
+            if (!comic || typeof comic !== 'object' || Array.isArray(comic)) {
+                return this._scanFailure({message: 'Picacg favorite item was invalid'})
+            }
+            const comicId = this._scanFavoriteId(comic._id)
+            if (!comicId) {
+                return this._scanFailure({message: 'Picacg comic ID was invalid'})
+            }
+            if (ids.has(comicId)) {
+                return this._scanFailure({message: 'Picacg favorites page contained duplicate IDs'})
+            }
+            ids.add(comicId)
+            if (!includeObservations) {
+                items.push({comicId})
+                continue
+            }
+            if (!Number.isSafeInteger(comic.epsCount) || comic.epsCount < 0) {
+                items.push({
+                    comicId,
+                    failure: this._scanFailure({
+                        sourceCode: 'ERR_EPS_COUNT',
+                        message: 'Picacg episode count was invalid',
+                    }).failure,
+                })
+                continue
+            }
+            items.push({
+                comicId,
+                observation: {
+                    update: {chapterCount: comic.epsCount},
+                },
+            })
+        }
+        return {ok: true, items, pages}
+    }
+
+    _scanSameIds = (left, right) => Array.isArray(left)
+        && Array.isArray(right)
+        && left.length === right.length
+        && left.every((value, index) => value === right[index])
+
+    scan = (() => {
+        const comic = {
             // Contract C1/C3: one declaration per branch, beside `load`.  The
             // keys are the standard observation fields; the values say where
             // each value comes from in the source payload.  The host never
@@ -378,8 +524,65 @@ class Picacg extends ComicSource {
                     },
                 }
             },
-        },
-    }
+        }
+
+        const collectionEnabled = typeof SCAN_COLLECTION_ITEM_FAILURES_V1 !== 'undefined'
+            && SCAN_COLLECTION_ITEM_FAILURES_V1 === true
+        if (!collectionEnabled) {
+            return {primary: 'comic', comic}
+        }
+        return {
+            primary: 'collection',
+            comic,
+            collection: {
+                itemFailures: true,
+                fieldSource: {
+                    chapterCount: 'epsCount',
+                },
+                load: async (collectionKey, cursor, request) => {
+                    if (collectionKey !== 'default' || typeof request !== 'function') {
+                        return this._scanFailure({message: 'Picacg collection identity is invalid'})
+                    }
+                    const state = this._scanFavoriteCursor(cursor)
+                    if (!state) {
+                        return this._scanFailure({message: 'Picacg scan cursor was invalid'})
+                    }
+                    const page = state.phase === 'page' ? state.page : 1
+                    const result = await this._scanFetchFavoritePage(
+                        page,
+                        request,
+                        state.phase !== 'verify',
+                    )
+                    if (!result || !result.ok) return result
+                    const ids = result.items.map((item) => item.comicId)
+                    if (state.phase === 'verify') {
+                        if (result.pages !== state.pages
+                            || !this._scanSameIds(ids, state.headIds)) {
+                            return this._scanFailure({message: 'Picacg favorites changed during scan'})
+                        }
+                        return {items: [], next: null}
+                    }
+                    if (state.phase === 'page' && result.pages !== state.pages) {
+                        return this._scanFailure({message: 'Picacg favorites page count changed'})
+                    }
+                    const headIds = state.phase === 'first' ? [...ids] : state.headIds
+                    const next = result.pages > page
+                        ? {
+                            phase: 'page',
+                            page: page + 1,
+                            pages: result.pages,
+                            headIds: [...headIds],
+                        }
+                        : {
+                            phase: 'verify',
+                            pages: result.pages,
+                            headIds: [...headIds],
+                        }
+                    return {items: result.items, next}
+                },
+            },
+        }
+    })()
 
     account = {
         reLogin: async () => {

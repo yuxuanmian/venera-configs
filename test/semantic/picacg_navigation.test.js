@@ -108,9 +108,8 @@ test('Picacg config version and index.json entry stay in sync', () => {
   assert.ok(entry, 'index.json must list picacg.js');
 
   assert.equal(entry.version, source.version);
-  // 009 bumps the source version for the threshold-aware bounded exact Tag
-  // scan; the file and the published catalog entry must move together.
-  assert.equal(source.version, '1.0.10');
+  // 016 bumps the source version for the opt-in favorites scan.
+  assert.equal(source.version, '1.0.11');
   assert.equal(
     source.minAppVersion,
     '2.0.0',

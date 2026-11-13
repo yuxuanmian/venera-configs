@@ -75,6 +75,7 @@ value format all fail the test suite.
 | `manwa.collection` | `latestChapterId` | `last_chapter.id` | — |
 | `manwa.collection` | `sourceUnread` | `is_new` \| `full_is_new` | — |
 | `picacg.comic` | `updatedAt` | `updated_at` | `@day` (weakest real representation) |
+| `picacg.collection` | `chapterCount` | `epsCount` | — |
 
 The callback accepts only a JSON request with `GET` or `POST`, an HTTP(S) URL,
 string headers, and an optional string body. It is the Host-owned path for
@@ -89,6 +90,13 @@ must own both `items` and `next`; `next: null` alone is natural termination.
 does not interpret `total`, `totalPage`, or `maxPage`; page and cursor limits
 are enforced independently. A collection page is fully validated before its
 first item is emitted, then valid items are committed one by one.
+
+When the host exposes `SCAN_COLLECTION_ITEM_FAILURES_V1 === true`, a
+collection branch can declare `itemFailures: true` and return a mix of
+`{comicId, observation}` and `{comicId, failure}` items. These variants are
+mutually exclusive and share the same ID validation. Picacg uses the
+collection branch on those hosts and retains its per-comic branch on older
+hosts. Manwa keeps the observation-only page contract.
 
 Only the standard facts `updatedAt`, `latestChapterId`, `chapterCount`,
 `recentChapterIds`, and `sourceUnread` are accepted. Do not return markers,
