@@ -1,0 +1,136 @@
+{
+  "value": "Fate",
+  "comment": "Deterministic candidate pages for Contract P exact tag search. value == 'Fate'. First occurrence wins for a duplicated raw _id.",
+  "maxPage": 2,
+  "pages": {
+    "1": {
+      "pages": 2,
+      "docs": [
+        {
+          "_id": "raw-exact-1",
+          "title": "Unrelated Title One",
+          "author": "Synthetic Author",
+          "tags": ["Fate"],
+          "categories": ["Doujin"],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "raw-exact-1.jpg"},
+          "totalLikes": 11,
+          "pagesCount": 20
+        },
+        {
+          "_id": "raw-exact-2",
+          "title": "Kept first occurrence",
+          "author": "Synthetic Author",
+          "tags": ["Action", "Fate", "Comedy"],
+          "categories": [],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "raw-exact-2.jpg"},
+          "likesCount": 7,
+          "pagesCount": 18
+        },
+        {
+          "_id": "title-only-1",
+          "title": "Fate",
+          "author": "Synthetic Author",
+          "tags": ["Action"],
+          "categories": [],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "title-only-1.jpg"},
+          "totalLikes": 3,
+          "pagesCount": 9
+        },
+        {
+          "_id": "categories-only-1",
+          "title": "Category Only",
+          "author": "Synthetic Author",
+          "tags": [],
+          "categories": ["Fate"],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "categories-only-1.jpg"},
+          "totalLikes": 4,
+          "pagesCount": 9
+        },
+        {
+          "_id": "case-differing-1",
+          "title": "Case Differing",
+          "author": "Synthetic Author",
+          "tags": ["fate"],
+          "categories": ["FATE"],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "case-differing-1.jpg"},
+          "totalLikes": 5,
+          "pagesCount": 9
+        },
+        {
+          "_id": "padded-1",
+          "title": "Padded Around",
+          "author": "Synthetic Author",
+          "tags": [" Fate "],
+          "categories": [],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "padded-1.jpg"},
+          "totalLikes": 6,
+          "pagesCount": 9
+        },
+        {
+          "_id": "padded-2",
+          "title": "Padded Suffix",
+          "author": "Synthetic Author",
+          "tags": ["Fate "],
+          "categories": [],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "padded-2.jpg"},
+          "totalLikes": 6,
+          "pagesCount": 9
+        },
+        {
+          "_id": "non-array-1",
+          "title": "Non Array Tags",
+          "author": "Synthetic Author",
+          "tags": "Fate",
+          "categories": ["Fate"],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "non-array-1.jpg"},
+          "totalLikes": 8,
+          "pagesCount": 9
+        },
+        {
+          "_id": "raw-exact-3",
+          "title": "Second Raw Exact On Page One",
+          "author": "Synthetic Author",
+          "tags": ["Fate"],
+          "categories": ["Action"],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "raw-exact-3.jpg"},
+          "totalLikes": 12,
+          "pagesCount": 21
+        }
+      ]
+    },
+    "2": {
+      "pages": 2,
+      "docs": [
+        {
+          "_id": "raw-exact-2",
+          "title": "Dropped second occurrence",
+          "author": "Synthetic Author",
+          "tags": ["Fate"],
+          "categories": [],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "raw-exact-2-dup.jpg"},
+          "totalLikes": 0,
+          "pagesCount": 18
+        },
+        {
+          "_id": "raw-exact-4",
+          "title": "Second Page Raw Exact",
+          "author": "Synthetic Author",
+          "tags": ["Comedy", "Fate"],
+          "categories": [],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "raw-exact-4.jpg"},
+          "totalLikes": 13,
+          "pagesCount": 22
+        },
+        {
+          "_id": "missing-tags-1",
+          "title": "Fate",
+          "author": "Synthetic Author",
+          "categories": ["Fate"],
+          "thumb": {"fileServer": "https://img.example.invalid", "path": "missing-tags-1.jpg"},
+          "totalLikes": 2,
+          "pagesCount": 9
+        }
+      ]
+    }
+  }
+}

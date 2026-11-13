@@ -148,6 +148,13 @@ function isConfigFile(filePath) {
   if (!filePath.endsWith(".js")) {
     return false;
   }
+  // Only top-level source configs are version-checked. Anything inside a
+  // directory (test harnesses such as `test/semantic/*.test.js`, or tools) is
+  // not a published source and has no `index.json` entry to match.
+  const normalized = filePath.replace(/\\/g, "/");
+  if (normalized.includes("/")) {
+    return false;
+  }
   const baseName = path.basename(filePath);
   return !baseName.startsWith("_");
 }

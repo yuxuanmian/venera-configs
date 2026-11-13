@@ -3,9 +3,9 @@ class Picacg extends ComicSource {
 
     key = "picacg"
 
-    version = "1.0.8"
+    version = "1.0.12"
 
-    minAppVersion = "1.0.0"
+    minAppVersion = "2.0.0"
 
     url = "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/picacg.js"
 
@@ -157,7 +157,7 @@ class Picacg extends ComicSource {
                 ok: true,
                 response: await request({
                     method,
-                    url: `${this.loadSetting('base_url')}/${path}`,
+                    url: `${this.loadSetting('base_url') || Picacg.defaultApiUrl}/${path}`,
                     headers: this.buildHeaders(method, path, token),
                     ...(body === undefined ? {} : {body}),
                 }),
@@ -262,12 +262,11 @@ class Picacg extends ComicSource {
         }
     }
 
-    _scanGetComic = async (comicId, request) => {
+    _scanGetPath = async (path, request) => {
         let state = this._scanSyncAuthState()
         const account = state.accountSnapshot ? [...state.accountSnapshot] : null
         const generation = state.generation
         const token = state.tokenSnapshot
-        const path = `comics/${encodeURIComponent(comicId)}`
         const firstResult = await this._scanRequest(request, 'GET', path, token)
         if (!firstResult.ok) return firstResult
         const first = firstResult.response
@@ -323,9 +322,178 @@ class Picacg extends ComicSource {
         return this._scanRequest(request, 'GET', path, state.tokenSnapshot)
     }
 
-    scan = {
-        primary: 'comic',
-        comic: {
+    _scanGetComic = (comicId, request) =>
+        this._scanGetPath(`comics/${encodeURIComponent(comicId)}`, request)
+
+    _scanFavoriteId = (value) => {
+        if (typeof value !== 'string') return undefined
+        const text = value.trim()
+        return text && !text.includes('\0') ? text : undefined
+    }
+
+    _scanFavoriteHeadIds = (value) => {
+        if (!Array.isArray(value)) return undefined
+        const ids = []
+        const seen = new Set()
+        for (const raw of value) {
+            const id = this._scanFavoriteId(raw)
+            if (!id || seen.has(id)) return undefined
+            seen.add(id)
+            ids.push(id)
+        }
+        return ids
+    }
+
+    _scanFavoriteCursor = (cursor) => {
+        if (cursor === null) return {phase: 'first'}
+        if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return undefined
+        const keys = Object.keys(cursor)
+        if (cursor.phase === 'page'
+            && keys.length === 4
+            && keys.includes('phase')
+            && keys.includes('page')
+            && keys.includes('pages')
+            && keys.includes('headIds')
+            && Number.isSafeInteger(cursor.page)
+            && Number.isSafeInteger(cursor.pages)
+            && cursor.pages >= 2
+            && cursor.page >= 2
+            && cursor.page <= cursor.pages) {
+            const headIds = this._scanFavoriteHeadIds(cursor.headIds)
+            return headIds
+                ? {phase: 'page', page: cursor.page, pages: cursor.pages, headIds}
+                : undefined
+        }
+        if (cursor.phase === 'verify'
+            && keys.length === 3
+            && keys.includes('phase')
+            && keys.includes('pages')
+            && keys.includes('headIds')
+            && Number.isSafeInteger(cursor.pages)
+            && cursor.pages >= 1) {
+            const headIds = this._scanFavoriteHeadIds(cursor.headIds)
+            return headIds
+                ? {phase: 'verify', pages: cursor.pages, headIds}
+                : undefined
+        }
+        return undefined
+    }
+
+    _scanFetchFavoritePage = async (page, request, includeObservations) => {
+        const path = `users/favourite?page=${page}&s=dd`
+        const result = await this._scanGetPath(path, request)
+        if (!result || !result.ok) {
+            return result && result.failure
+                ? result.failure
+                : this._scanFailure({message: 'Picacg favorites request failed'})
+        }
+        const response = result.response
+        if (!response || response.status !== 200) {
+            return this._scanFailure({
+                httpStatus: response && response.status,
+                message: 'Picacg favorites request failed',
+            })
+        }
+        let data
+        try {
+            data = JSON.parse(response.body)
+        } catch (_) {
+            return this._scanFailure({message: 'Picacg favorites response was invalid'})
+        }
+        const comics = data && data.data && data.data.comics
+        if (!comics || typeof comics !== 'object' || Array.isArray(comics)
+            || !Array.isArray(comics.docs)
+            || !Number.isSafeInteger(comics.pages)
+            || comics.pages < 0) {
+            return this._scanFailure({message: 'Picacg favorites page was invalid'})
+        }
+        const pages = comics.pages === 0 ? 1 : comics.pages
+        if (page > pages
+            || (comics.page !== undefined
+                && (typeof comics.page !== 'number'
+                    && typeof comics.page !== 'string'
+                    || !Number.isSafeInteger(Number(comics.page))
+                    || Number(comics.page) !== page))
+            || (comics.pages === 0 && comics.docs.length !== 0)
+            || (comics.pages > 1 && comics.docs.length === 0)) {
+            return this._scanFailure({message: 'Picacg favorites pagination was inconsistent'})
+        }
+        const limit = comics.limit === undefined ? undefined : Number(comics.limit)
+        if (comics.limit !== undefined
+            && ((typeof comics.limit !== 'number' && typeof comics.limit !== 'string')
+                || !Number.isSafeInteger(limit)
+                || limit < 0
+                || comics.docs.length > limit)) {
+            return this._scanFailure({message: 'Picacg favorites page limit was inconsistent'})
+        }
+
+        const items = []
+        const ids = new Set()
+        for (const comic of comics.docs) {
+            if (!comic || typeof comic !== 'object' || Array.isArray(comic)) {
+                return this._scanFailure({message: 'Picacg favorite item was invalid'})
+            }
+            const comicId = this._scanFavoriteId(comic._id)
+            if (!comicId) {
+                return this._scanFailure({message: 'Picacg comic ID was invalid'})
+            }
+            if (ids.has(comicId)) {
+                return this._scanFailure({message: 'Picacg favorites page contained duplicate IDs'})
+            }
+            ids.add(comicId)
+            if (!includeObservations) {
+                items.push({comicId})
+                continue
+            }
+            if (!Number.isSafeInteger(comic.epsCount) || comic.epsCount < 0) {
+                items.push({
+                    comicId,
+                    failure: this._scanFailure({
+                        sourceCode: 'ERR_EPS_COUNT',
+                        message: 'Picacg episode count was invalid',
+                    }).failure,
+                })
+                continue
+            }
+            items.push({
+                comicId,
+                observation: {
+                    update: {chapterCount: comic.epsCount},
+                },
+            })
+        }
+        return {ok: true, items, pages}
+    }
+
+    _scanSameIds = (left, right) => Array.isArray(left)
+        && Array.isArray(right)
+        && left.length === right.length
+        && left.every((value, index) => value === right[index])
+
+    // The first page fixes the range. Later loads request at most two
+    // adjacent pages and return one batch to the host for ordered validation.
+    _scanFetchFavoriteBatch = async (state, request) => {
+        const page = state.phase === 'page' ? state.page : 1
+        if (state.phase !== 'page') {
+            return this._scanFetchFavoritePage(page, request, state.phase !== 'verify')
+        }
+        const pageNumbers = page < state.pages ? [page, page + 1] : [page]
+        const results = await Promise.all(pageNumbers.map(
+            (number) => this._scanFetchFavoritePage(number, request, true),
+        ))
+        const items = []
+        for (const result of results) {
+            if (!result.ok) return result
+            if (result.pages !== state.pages) {
+                return this._scanFailure({message: 'Picacg favorites page count changed'})
+            }
+            items.push(...result.items)
+        }
+        return {ok: true, items, pages: state.pages, lastPage: pageNumbers[pageNumbers.length - 1]}
+    }
+
+    scan = (() => {
+        const comic = {
             // Contract C1/C3: one declaration per branch, beside `load`.  The
             // keys are the standard observation fields; the values say where
             // each value comes from in the source payload.  The host never
@@ -378,8 +546,63 @@ class Picacg extends ComicSource {
                     },
                 }
             },
-        },
-    }
+        }
+
+        const collectionEnabled = typeof SCAN_COLLECTION_ITEM_FAILURES_V1 !== 'undefined'
+            && SCAN_COLLECTION_ITEM_FAILURES_V1 === true
+        if (!collectionEnabled) {
+            return {primary: 'comic', comic}
+        }
+        return {
+            primary: 'collection',
+            comic,
+            collection: {
+                itemFailures: true,
+                fieldSource: {
+                    chapterCount: 'epsCount',
+                },
+                load: async (collectionKey, cursor, request) => {
+                    if (collectionKey !== 'default' || typeof request !== 'function') {
+                        return this._scanFailure({message: 'Picacg collection identity is invalid'})
+                    }
+                    const state = this._scanFavoriteCursor(cursor)
+                    if (!state) {
+                        return this._scanFailure({message: 'Picacg scan cursor was invalid'})
+                    }
+                    const result = await this._scanFetchFavoriteBatch(state, request)
+                    if (!result || !result.ok) return result
+                    const ids = result.items.map((item) => item.comicId)
+                    if (state.phase === 'verify') {
+                        if (result.pages !== state.pages
+                            || !this._scanSameIds(ids, state.headIds)) {
+                            return this._scanFailure({message: 'Picacg favorites changed during scan'})
+                        }
+                        return {items: [], next: null}
+                    }
+                    // The host's scope limit counts loads, not HTTP pages.
+                    // Keep the original ceiling including the final verification.
+                    if (result.pages >= 4096) {
+                        return this._scanFailure({message: 'Picacg favorites exceeded the scan page limit'})
+                    }
+                    const page = result.lastPage ?? 1
+                    const headIds = state.phase === 'first' ? [...ids] : state.headIds
+                    const next = result.pages > page
+                        ? {
+                            phase: 'page',
+                            page: page + 1,
+                            pages: result.pages,
+                            headIds: [...headIds],
+                        }
+                        : {
+                            phase: 'verify',
+                            pages: result.pages,
+                            headIds: [...headIds],
+                        }
+                    return {items: result.items, next}
+                },
+            },
+        }
+    })()
 
     account = {
         reLogin: async () => {
@@ -726,10 +949,60 @@ class Picacg extends ComicSource {
         }
     }
 
-    /// 搜索
-    search = {
-        load: async (keyword, options, page) => {
-            let res = await Network.post(
+    // Search-local shared in-flight relogin promise.
+    //
+    // Proof (test/semantic/picacg_tag_search.test.js, "three concurrent 401s"):
+    // with a fixed 3-request batch the pre-change code started three parallel
+    // `auth/sign-in` POSTs, one per 401, and all three raced to
+    // `saveData('token')`.  That duplicated/conflicting recovery is what this
+    // helper removes: concurrent search recoveries await one promise.  It
+    // reuses the existing account/token boundary (`account.reLogin`) and never
+    // touches `scan`'s `_scanAuthState` flow or the global account API.  The
+    // promise is cleared as soon as it settles, so a later 401 starts a fresh
+    // recovery instead of observing a stale success or failure.
+    _searchReloginPending = null
+
+    _searchRelogin = () => {
+        if (this._searchReloginPending) {
+            return this._searchReloginPending
+        }
+        const record = {promise: null}
+        record.promise = Promise.resolve()
+            .then(() => this.account.reLogin())
+            .then(
+                (value) => {
+                    if (this._searchReloginPending === record.promise) {
+                        this._searchReloginPending = null
+                    }
+                    return value
+                },
+                (error) => {
+                    if (this._searchReloginPending === record.promise) {
+                        this._searchReloginPending = null
+                    }
+                    throw error
+                },
+            )
+        this._searchReloginPending = record.promise
+        return record.promise
+    }
+
+    // Ordinary advanced-search candidate loader, shared by the ordinary search
+    // page and the exact Tag search.  Same URL, headers and `{keyword, sort}`
+    // body as the 1.0.8 implementation, but it returns the raw documents and
+    // the explicit `pages` value instead of parsed comics.
+    _searchRaw = async (keyword, options, page) => {
+        let res = await Network.post(
+            `${this.loadSetting('base_url')}/comics/advanced-search?page=${page}`,
+            this.buildHeaders('POST', `comics/advanced-search?page=${page}`, this.loadData('token')),
+            JSON.stringify({
+                keyword: keyword,
+                sort: options[0],
+            })
+        )
+        if(res.status === 401) {
+            await this._searchRelogin()
+            res = await Network.post(
                 `${this.loadSetting('base_url')}/comics/advanced-search?page=${page}`,
                 this.buildHeaders('POST', `comics/advanced-search?page=${page}`, this.loadData('token')),
                 JSON.stringify({
@@ -737,28 +1010,181 @@ class Picacg extends ComicSource {
                     sort: options[0],
                 })
             )
-            if(res.status === 401) {
-                await this.account.reLogin()
-                res = await Network.post(
-                    `${this.loadSetting('base_url')}/comics/advanced-search?page=${page}`,
-                    this.buildHeaders('POST', `comics/advanced-search?page=${page}`, this.loadData('token')),
-                    JSON.stringify({
-                        keyword: keyword,
-                        sort: options[0],
-                    })
-                )
+        }
+        if (res.status !== 200) {
+            throw 'Invalid status code: ' + res.status
+        }
+        let data = JSON.parse(res.body)
+        return {
+            docs: data.data.comics.docs,
+            maxPage: data.data.comics.pages,
+        }
+    }
+
+    // Versioned opaque cursor for `search.tagSearch.loadNext`.  Only the JSON
+    // literal `null` starts at the ordinary first page; any other value --
+    // including `undefined` -- is malformed and throws explicitly instead of
+    // silently restarting from page 1.  The Host always emits the literal
+    // `null` for the first call (it interpolates `jsonEncode(null)` into the
+    // generated call), so `undefined` can only come from a non-Host caller.
+    _tagSearchCursor = (next) => {
+        if (next === null) {
+            return {nextPage: 1, maxPage: null}
+        }
+        let parsed = null
+        if (typeof next === 'string') {
+            try {
+                parsed = JSON.parse(next)
+            } catch (_) {
+                parsed = null
             }
-            if (res.status !== 200) {
-                throw 'Invalid status code: ' + res.status
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.v !== 1) {
+            throw new Error('Invalid tag search cursor')
+        }
+        if (!Number.isInteger(parsed.nextPage) || parsed.nextPage < 1) {
+            throw new Error('Invalid tag search cursor')
+        }
+        if (!(parsed.maxPage === null
+            || (Number.isInteger(parsed.maxPage) && parsed.maxPage >= 0))) {
+            throw new Error('Invalid tag search cursor')
+        }
+        return {nextPage: parsed.nextPage, maxPage: parsed.maxPage}
+    }
+
+    // The endpoint reports `pages`.  It is required metadata for the first
+    // page, which is fetched precisely to learn it: a missing, zero or
+    // non-integer value is malformed and makes the invocation fail explicitly.
+    // Silently treating it as "no further page" would truncate the scan and
+    // report a false finished state, which FR-021 (explicit metadata over
+    // inference) does not allow.
+    _tagSearchMaxPage = (value) => Number.isInteger(value) && value >= 1 ? value : null
+
+    // Exact-match accumulation for one committed batch of a
+    // `tagSearch.loadNext` invocation.
+    //
+    // It is given ONLY the raw documents that this batch newly fetched, in
+    // ascending logical page order, so every document of the invocation is
+    // visited exactly once: a batch can neither re-count nor re-emit a document
+    // from an earlier batch.  That matters for raw documents without an `_id` --
+    // they cannot be de-duplicated by identity, so re-walking earlier batches
+    // would have returned them again on every later batch and counted them
+    // towards the early-return threshold more than once.
+    //
+    // Contract P predicate, unchanged by the 009 revision: only the raw `tags`
+    // array is consulted (`raw.tags.includes(value)`) and the check runs before
+    // `parseComic`, which merges raw tags with categories for presentation.
+    // There is no trim, no case conversion and no category or display-label
+    // fallback.  Documents without an identity are kept, exactly once, so the
+    // identity contract is not silently changed here.
+    _collectExactMatches = (value, docs, seen, comics) => {
+        const before = comics.length
+        docs.forEach(raw => {
+            if (!Array.isArray(raw.tags) || !raw.tags.includes(value)) return
+            if (raw._id !== undefined && raw._id !== null) {
+                if (seen.has(raw._id)) return
+                seen.add(raw._id)
             }
-            let data = JSON.parse(res.body)
+            comics.push(this.parseComic(raw))
+        })
+        return comics.length - before
+    }
+
+    /// 搜索
+    search = {
+        load: async (keyword, options, page) => {
+            let raw = await this._searchRaw(keyword, options, page)
             let comics = []
-            data.data.comics.docs.forEach(c => {
+            raw.docs.forEach(c => {
                 comics.push(this.parseComic(c))
             })
             return {
                 comics: comics,
-                maxPage: data.data.comics.pages
+                maxPage: raw.maxPage
+            }
+        },
+        // Contract P exact Tag search.  `loadNext` owns a versioned opaque
+        // cursor; the Host never decodes it.  Source work per invocation is
+        // bounded to 6 candidate pages with at most 3 concurrent requests, and
+        // nothing is returned unless every scheduled request succeeded.
+        //
+        // 009 revision: the invocation may end earlier than the 6-page budget
+        // once it has accumulated the shared minimum useful result count
+        // (`SEMANTIC_SEARCH_MIN_RESULTS_PER_LOAD`) of exact, stable,
+        // de-duplicated matches.  The threshold only ever stops work earlier;
+        // it never authorizes an extra page, a wider predicate or a longer
+        // scan, and it is unrelated to the Host's UI append limit.  The
+        // returned cursor is the first page that was NOT scanned, so a later
+        // invocation resumes exactly there (the Host de-duplicates comics by
+        // identity, so re-returning an already seen one is safe while skipping
+        // an unscanned page would silently drop results).
+        tagSearch: {
+            loadNext: async (value, options, next) => {
+                const cursor = this._tagSearchCursor(next)
+                let maxPage = cursor.maxPage
+                let nextPage = cursor.nextPage
+                let scanned = 0
+                // Exact-match accumulation state for the whole invocation.
+                // Requests are consumed batch by batch into `comics` in
+                // ascending page order, so nothing needs to be buffered and no
+                // document is ever visited twice.
+                const seen = new Set()
+                const comics = []
+                let matched = 0
+                if (maxPage === null) {
+                    // maxPage is unknown, so page 1 is requested alone to learn
+                    // it before any batch is scheduled.
+                    const first = await this._searchRaw(value, options, nextPage)
+                    const learned = this._tagSearchMaxPage(first.maxPage)
+                    if (learned === null) {
+                        // Required pagination metadata is missing or malformed.
+                        // Fail loudly rather than silently reporting "finished".
+                        throw new Error('Invalid tag search pagination metadata')
+                    }
+                    maxPage = learned
+                    scanned += 1
+                    nextPage += 1
+                    // Page 1 committed successfully, so it is part of the
+                    // invocation's atomic result set and may satisfy the
+                    // threshold on its own. When it does, no batch is
+                    // scheduled at all: the loop below is entered only while
+                    // the accumulated count is still short of the threshold.
+                    matched += this._collectExactMatches(value, first.docs, seen, comics)
+                }
+                while (matched < SEMANTIC_SEARCH_MIN_RESULTS_PER_LOAD
+                    && maxPage !== null && scanned < 6 && nextPage <= maxPage) {
+                    // `Promise.all` over an ascending page array: completion
+                    // order can be arbitrary while this batch's documents are
+                    // consumed in ascending page order.
+                    const batch = []
+                    const size = Math.min(3, 6 - scanned, maxPage - nextPage + 1)
+                    for (let index = 0; index < size; index++) {
+                        batch.push(nextPage + index)
+                    }
+                    const results = await Promise.all(
+                        batch.map(page => this._searchRaw(value, options, page))
+                    )
+                    // The whole batch succeeded, so it may be committed now.
+                    // A member failure above rejects before this point and
+                    // leaves `nextPage` untouched for the caller to replay.
+                    // `results` is page-ascending by construction, and only
+                    // these freshly fetched documents are consumed.
+                    results.forEach(result => {
+                        matched += this._collectExactMatches(value, result.docs, seen, comics)
+                    })
+                    // Advance the scanned budget only after this batch has been
+                    // published, so `scanned < 6` still admits the full 6-page
+                    // budget for a sparse invocation.
+                    scanned += size
+                    nextPage += size
+                }
+                const more = maxPage !== null && nextPage <= maxPage
+                return {
+                    comics: comics,
+                    next: more
+                        ? JSON.stringify({v: 1, nextPage: nextPage, maxPage: maxPage})
+                        : null,
+                }
             }
         },
         optionList: [
@@ -1066,6 +1492,11 @@ class Picacg extends ComicSource {
                     action: 'category',
                     keyword: tag,
                     param: 'c',
+                }
+            } else if (namespace === 'Tags') {
+                return {
+                    action: 'tagSearch',
+                    keyword: tag,
                 }
             } else {
                 return {
