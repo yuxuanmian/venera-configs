@@ -8,15 +8,20 @@
 
 | 功能 | 已观察到的数据来源 | 最小适配状态 |
 | --- | --- | --- |
+| 首页推荐与排行榜 | 首页 HTML | `1.0.9` 接入发现页 |
+| 关键词搜索 | 搜索页 HTML | `1.0.9` 接入搜索，`1.0.11` 支持翻页 |
+| 分类浏览 | 分类页 HTML、`/getBooks` JSON | `1.0.9` 接入，筛选来自分类页的实际链接 |
 | 登录与图片验证码 | 登录 HTML、验证码图片、登录 JSON | 可实现 |
 | 收藏夹浏览 | 收藏页 HTML 和 JSON 列表 | 可实现；站点页码从 0 开始，Venera 页码需减 1 |
 | 收藏/取消收藏 | 详情页内嵌脚本 | 可实现，参数方向属于前端行为推定，需测试账号确认 |
 | 漫画详情与章节目录 | 服务端渲染 HTML | 可实现；全部章节均在 HTML 中 |
 | 阅读 | 章节 HTML、图片地址与响应转换规则 | 可实现 |
 | 漫画评论读取 | JSON 评论列表 | 可实现；站点页码从 0 开始，Venera 页码需减 1 |
+| 章节评论读取 | 同一评论接口，传入章节 ID | `1.0.9` 接入只读入口；需要在 App 内复核实际响应 |
+| 每日签到检查 | 福利页 HTML | `1.0.12` 支持自动和手动触发 |
 | 评论发布、回复、点赞/点踩 | 未抓到对应请求 | 暂不实现相应 Venera 回调 |
 
-本文只覆盖当前目标所需的登录、收藏夹、详情、阅读和评论读取；发现页与搜索不在范围内。
+发现、分类、搜索和福利页依据 2026-11-14 的脱敏抓包补充。站点阅读历史和留言历史未接入。
 
 ## 通用约定
 
@@ -35,6 +40,9 @@
 
 | 站点能力 | Venera 源字段/回调 |
 | --- | --- |
+| 首页推荐和排行榜 | <code>explore</code> |
+| 分类和筛选 | <code>category</code>、<code>categoryComics.optionLoader</code>、<code>categoryComics.load</code> |
+| 关键词搜索 | <code>search.load</code> |
 | 登录 | <code>account.login</code> |
 | 收藏夹 | <code>favorites.loadComics</code> 或 <code>favorites.loadNext</code> |
 | 收藏夹完整更新检查 | <code>favorites.updateCheck.load</code>；固定 15 条一页，返回完整快照 |
@@ -43,8 +51,22 @@
 | 章节图片列表 | <code>comic.loadEp</code> |
 | 加密图片响应处理 | <code>comic.onImageLoad</code> 的 <code>onResponse</code> |
 | 详情页评论 | <code>comic.loadComments</code> |
+| 章节评论 | <code>comic.loadChapterComments</code> |
 
 对于当前证据不足的能力，不声明回调比返回一个会失败的回调更好：例如未抓到发布评论接口时，不实现 <code>sendComment</code>。
+
+## 发现、分类和搜索
+
+- `GET /`：分别解析 `.manga-list-2` 推荐区和 `.rank-list` 榜单。每个区块按原站顺序展示；只接受指向漫蛙作品详情的链接，封面优先取懒加载属性。
+- `GET /booklist`：从分类页的筛选链接读取真实参数值。未在 HTML 中提供可解析值的筛选组不会显示。
+- `GET /getBooks`：从 `page=1` 开始。默认 `gender`、`sort` 为 `-1`，`tag`、`end`、`has_full`、`area`、`level` 为空。响应没有已知的总页数字段，非空页不根据条数猜测末页；空页停止。`blocked: true` 的作品不展示。若一整页都被屏蔽，App 的连续列表可能作为空页结束。
+- `GET /search?keyword=...&page=N`：搜索页从 `1` 开始，每页重新读取 HTML 的 `.book-list`。`.pagination2` 中有有效的「下一页」时继续加载，消失时以当前页为末页。可见的数字页码只是分页窗口，不作为总页数；有当前页标记时会核对它是否与请求一致。
+
+## 每日签到检查
+
+- 「每日自动检查签到」默认关闭。启用后，源加载或首次浏览时会尝试访问一次 `GET /users/welfare`，按北京时间日期去重；关闭 App 时不会执行，也不会由收藏追更任务执行。
+- 「检查今日签到」使用同一次福利页检查。手动点击可以重试，自动与手动请求同时触发时复用在途请求。当天已手动访问时不再自动访问，自动失败也不会当天反复请求。
+- 源数据只保存最近一次访问尝试的日期，退出源账号时清除。标记用于去重，不代表签到成功。只有福利页当天的 `.sign_row .star[data-test]` 带 `signedin` 才提示「今日已签到」。是否单靠访问福利页就能完成签到仍需要跨日实测；不会调用积分或广告奖励接口。
 
 ## 登录与验证码
 
@@ -70,7 +92,7 @@ GET /captcha
 
 1. 先请求登录页，建立当前域名的初始会话。
 2. 通过 <code>Network.fetchBytes('GET', captchaUrl, ...)</code> 获取验证码的 ArrayBuffer。
-3. 使用 <code>UI.showInputDialog</code> 展示该字节数组，由用户手工输入验证码。
+3. 使用 <code>UI.showInputDialog</code> 展示该字节数组，由用户手工输入验证码。传入空校验回调以兼容旧版 App，弹窗返回后检查取消和空输入。
 4. 以表单编码提交账号、密码和验证码。
 5. 根据 JSON 中的 <code>err</code> 判断结果；失败时展示 <code>msg</code>、重新获取验证码，不要复用旧图。
 
@@ -409,6 +431,8 @@ Referer: https://manwa.me/book/<漫画 ID>
 
 Venera 的 <code>comic.loadComments</code> 首次调用传入 <code>page=1</code>，站点首次请求为 <code>page=0</code>，因此请求参数应使用 <code>sitePage = page - 1</code>。评论接口未返回总页数时可省略 <code>maxPage</code>；Venera 会在收到空列表后停止继续加载。
 
+`comic.loadChapterComments` 使用同一个读取接口，传入章节 ID，并用章节页作为 Referer。只展示 `chapter_id` 匹配当前章节的条目，防止服务端未按章节过滤时把作品评论展示在阅读器。章节请求仍需使用实际账号复核。
+
 回复详情、评论发出、评论点赞和投票请求均不属于 MVP。应把 <code>id</code> 与 <code>replyCount</code> 留空，不实现 <code>sendComment</code>、<code>likeComment</code>、<code>voteComment</code>，避免界面展示不可用的操作入口。
 
 ## 上线前待补抓清单
@@ -457,4 +481,4 @@ failure deletes absent records.
 2. 若要支持多文件夹，补抓文件夹列表、新建、删除和移动收藏的请求。
 3. 验证验证码错误、过期和成功后的 Cookie 行为；绝不在文档中记录凭据。
 4. 验证章节图片的默认源、<code>img_host</code> 切换、必要请求头和解密后的图片格式。
-5. 只有需要扩展功能时，再补抓评论回复、章节评论、发布和投票请求。
+5. 复核分类第 2 页、末页与一组非默认筛选，并用实际章节验证评论作用域。需要扩展评论功能时再补抓回复读取、发布和投票请求。
