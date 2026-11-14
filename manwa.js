@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.11"
+    version = "1.0.12"
 
     minAppVersion = "1.6.0"
 
@@ -590,6 +590,86 @@ class Manwa extends ComicSource {
 
         logout: () => {
             Network.deleteCookies(this.baseUrl);
+            this.deleteData("dailyWelfareVisitDate");
+        },
+    }
+
+    checkinRequest = null
+
+    checkinDay = (now = Date.now()) => new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10)
+
+    visitWelfare = async () => {
+        if (!this.isLogged) return "请先登录漫蛙";
+        if (this.checkinRequest) return this.checkinRequest;
+
+        const visit = async () => {
+            if (!this.isLogged) return "请先登录漫蛙";
+            const day = this.checkinDay();
+            // Record the attempt before the request so restarts and failures do not
+            // cause more automatic requests. Manual checks can still retry.
+            if (this.loadData("dailyWelfareVisitDate") !== day) {
+                await this.saveData("dailyWelfareVisitDate", day);
+            }
+            if (!this.isLogged) return "请先登录漫蛙";
+            const response = await Network.get(`${this.baseUrl}/users/welfare`, {
+                ...this.htmlHeaders(`${this.baseUrl}/ucenter`),
+                "Cache-Control": "no-cache",
+            });
+            if (response.status === 401) return "漫蛙登录已失效，请重新登录";
+            this.requireSuccess(response, "welfare");
+
+            const document = new HtmlDocument(response.body);
+            try {
+                if (document.querySelector("#form-login")) {
+                    return "漫蛙登录已失效，请重新登录";
+                }
+                const today = document.querySelector(`.sign_row .star[data-test="${this.checkinDay()}"]`);
+                if (!today) return "福利页未找到今日签到状态";
+                return today.classNames.includes("signedin") ? "今日已签到" : "今日未确认签到";
+            } finally {
+                document.dispose();
+            }
+        };
+
+        // Assign the shared task before starting it, even if all host calls are synchronous.
+        const request = Promise.resolve().then(visit).catch(() => "签到检查失败，请稍后手动重试");
+        this.checkinRequest = request;
+        try {
+            return await request;
+        } finally {
+            this.checkinRequest = null;
+        }
+    }
+
+    maybeAutoCheckin = async () => {
+        try {
+            if (this.checkinRequest || !this.isLogged || this.loadSetting("autoCheckin") !== true
+                || this.loadData("dailyWelfareVisitDate") === this.checkinDay()) {
+                return;
+            }
+            await this.visitWelfare();
+        } catch (_) {
+            // Sign-in must not interrupt browsing or source initialization.
+        }
+    }
+
+    init() {
+        return this.maybeAutoCheckin();
+    }
+
+    settings = {
+        autoCheckin: {
+            title: "每日自动检查签到（启动或使用时）",
+            type: "switch",
+            default: false,
+        },
+        checkinNow: {
+            title: "检查今日签到",
+            type: "callback",
+            buttonText: "立即检查",
+            callback: async () => {
+                UI.showMessage(await this.visitWelfare());
+            },
         },
     }
 
@@ -598,6 +678,7 @@ class Manwa extends ComicSource {
         singleFolderForSingleComic: false,
 
         loadComics: async (page, folder) => {
+            void this.maybeAutoCheckin();
             const pageIndex = Math.max(0, page - 1);
             const siteOffset = pageIndex * this.favoritePageSize;
             const bookshelfUrl = `${this.baseUrl}/bookshelf`;
@@ -703,6 +784,7 @@ class Manwa extends ComicSource {
     }
 
     readListPage = async (path, operation, parse) => {
+        void this.maybeAutoCheckin();
         const response = await Network.get(`${this.baseUrl}${path}`, this.htmlHeaders());
         this.requireSuccess(response, operation);
         const document = new HtmlDocument(response.body);
@@ -890,6 +972,7 @@ class Manwa extends ComicSource {
     }
 
     loadCategoryComics = async (options, page) => {
+        void this.maybeAutoCheckin();
         const filters = {tag: "", end: "", gender: -1, has_full: "", area: "", sort: -1, level: ""};
         for (const option of options ?? []) {
             const index = option.indexOf(":");
@@ -1039,6 +1122,7 @@ class Manwa extends ComicSource {
 
     comic = {
         loadInfo: async (id) => {
+            void this.maybeAutoCheckin();
             const comicId = String(id);
             const response = await Network.get(
                 `${this.baseUrl}/book/${encodeURIComponent(comicId)}`,
@@ -1140,6 +1224,7 @@ class Manwa extends ComicSource {
         },
 
         loadEp: async (comicId, epId) => {
+            void this.maybeAutoCheckin();
             if (epId == null || !String(epId).trim()) {
                 throw "无效章节 ID";
             }

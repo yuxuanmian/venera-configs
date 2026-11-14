@@ -25,6 +25,129 @@ function setup(respond, parseHtml) {
 
 const json = (value, status = 200) => ({status, body: JSON.stringify(value)});
 
+function checkinHarness({state = new Map(), enabled = true, loggedIn = true, respond, classNames = ['star', 'signedin']} = {}) {
+  const messages = [];
+  const dates = [];
+  const harness = setup(respond ?? (() => ({status: 200, body: 'welfare'})), (body) => ({
+    querySelector: (selector) => {
+      if (selector === '#form-login') return body === 'login' ? {} : null;
+      dates.push(selector);
+      return body === 'welfare' && classNames ? {classNames} : null;
+    },
+    dispose() {},
+  }));
+  Object.defineProperty(harness.source, 'isLogged', {get: () => loggedIn});
+  harness.source.loadSetting = (key) => {
+    assert.equal(key, 'autoCheckin');
+    return enabled;
+  };
+  harness.source.loadData = (key) => state.get(key);
+  harness.source.saveData = async (key, value) => state.set(key, value);
+  harness.source.deleteData = (key) => state.delete(key);
+  harness.network.deleteCookies = () => {};
+  harness.ui.showMessage = (message) => messages.push(message);
+  return {...harness, state, messages, dates};
+}
+
+test('automatic welfare checks are opt-in and run once per Beijing date across source reloads', async () => {
+  const disabled = checkinHarness({enabled: false});
+  const anonymous = checkinHarness({loggedIn: false});
+  await disabled.source.init();
+  await anonymous.source.init();
+  assert.equal(disabled.calls.length, 0);
+  assert.equal(anonymous.calls.length, 0);
+  await anonymous.source.settings.checkinNow.callback();
+  assert.deepEqual(anonymous.messages, ['请先登录漫蛙']);
+  assert.equal(anonymous.calls.length, 0);
+
+  const first = checkinHarness();
+  const restarted = checkinHarness({state: first.state});
+  const clock = mockClock(first.source, restarted.source);
+  clock.value = Date.parse('2026-11-14T15:59:59Z');
+  await first.source.init();
+  await restarted.source.init();
+  assert.equal(first.calls.length, 1);
+  assert.equal(restarted.calls.length, 0);
+  assert.equal(first.state.get('dailyWelfareVisitDate'), '2026-11-14');
+
+  clock.value = Date.parse('2026-11-14T16:00:00Z');
+  await restarted.source.init();
+  assert.equal(restarted.calls.length, 1);
+  assert.equal(restarted.state.get('dailyWelfareVisitDate'), '2026-11-15');
+  assert.deepEqual(restarted.dates, ['.sign_row .star[data-test="2026-11-15"]']);
+  restarted.source.account.logout();
+  assert.equal(restarted.state.has('dailyWelfareVisitDate'), false);
+});
+
+function mockClock(...sources) {
+  const clock = {value: 0};
+  for (const source of sources) {
+    const day = source.checkinDay;
+    source.checkinDay = () => day(clock.value);
+  }
+  return clock;
+}
+
+test('manual welfare checks share an in-flight automatic request and can retry a failure', async () => {
+  let settle;
+  let requestCount = 0;
+  const request = new Promise((resolve) => { settle = resolve; });
+  const {source, calls, messages} = checkinHarness({respond: () => {
+    requestCount += 1;
+    return requestCount === 1 ? request : {status: 200, body: 'welfare'};
+  }});
+  assert.equal(source.settings.autoCheckin.default, false);
+  const automatic = source.init();
+  const manual = source.settings.checkinNow.callback();
+  settle({status: 503, body: ''});
+  await Promise.all([automatic, manual]);
+  await source.init();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.pathname, '/users/welfare');
+  assert.equal(calls[0].headers['Cache-Control'], 'no-cache');
+  assert.deepEqual(messages, ['签到检查失败，请稍后手动重试']);
+  await source.settings.checkinNow.callback();
+  assert.equal(calls.length, 2);
+  assert.equal(messages.at(-1), '今日已签到');
+});
+
+test('a successful welfare response does not imply that the account signed in', async () => {
+  const unchecked = checkinHarness({classNames: ['star', 'signednot']});
+  const missing = checkinHarness({classNames: null});
+  const expired = checkinHarness({respond: () => ({status: 200, body: 'login'})});
+  await unchecked.source.settings.checkinNow.callback();
+  await missing.source.settings.checkinNow.callback();
+  await expired.source.settings.checkinNow.callback();
+  await unchecked.source.init();
+  assert.equal(unchecked.calls.length, 1);
+  assert.deepEqual(unchecked.messages, ['今日未确认签到']);
+  assert.deepEqual(missing.messages, ['福利页未找到今日签到状态']);
+  assert.deepEqual(expired.messages, ['漫蛙登录已失效，请重新登录']);
+});
+
+test('the first browse of a new day triggers the welfare request without delaying search', async () => {
+  let finishWelfare;
+  const welfare = new Promise((resolve) => { finishWelfare = resolve; });
+  const {source, calls} = setup((url) => url.pathname === '/users/welfare'
+    ? welfare : {status: 200, body: 'search'},
+  (body) => body === 'search' ? searchDocument({ids: [101]}) : {
+    querySelector: () => null,
+    dispose() {},
+  });
+  Object.defineProperty(source, 'isLogged', {value: true});
+  source.loadSetting = () => true;
+  let lastDate;
+  source.loadData = () => lastDate;
+  source.saveData = async (_key, value) => { lastDate = value; };
+  const result = await source.search.load('sample', [], 1);
+  assert.equal(result.comics[0].id, '101');
+  assert.deepEqual(calls.map(({url}) => url.pathname), ['/search', '/users/welfare']);
+  finishWelfare({status: 200, body: 'welfare'});
+  await source.checkinRequest;
+  await source.search.load('sample', [], 1);
+  assert.equal(calls.filter(({url}) => url.pathname === '/users/welfare').length, 1);
+});
+
 // Stub the host DOM bridge using the captured search page structure.
 function searchDocument({active, links = [], ids = [], hasList = true, hasSearchControls = false, brokenCards = false}) {
   const pager = active == null ? null : {
