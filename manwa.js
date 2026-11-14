@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.10"
+    version = "1.0.11"
 
     minAppVersion = "1.6.0"
 
@@ -936,12 +936,25 @@ class Manwa extends ComicSource {
     search = {
         load: async (keyword, _options, page) => {
             const query = String(keyword ?? "").trim();
-            if (!query || page > 1) {
+            if (!query) {
                 return {comics: [], maxPage: 1};
             }
-            return this.readListPage(`/search/?${this.formEncode({keyword: query})}`, "search", (document) => {
+            const path = `/search?${this.formEncode({keyword: query, page})}`;
+            return this.readListPage(path, "search", (document) => {
+                const pager = document.querySelector(".pagination2");
+                const currentPage = this.textOf(pager?.querySelector("li.active > a"));
+                if (currentPage && (!/^\d+$/.test(currentPage) || Number(currentPage) !== page)) {
+                    throw "搜索结果页码与请求不符";
+                }
+                const nextLink = pager?.querySelectorAll("a[data-page]").find(
+                    (link) => /^下一[页頁]$/.test(this.textOf(link).replace(/\s+/g, "")),
+                );
+                if (nextLink && Number(nextLink.attributes["data-page"]) !== page + 1) {
+                    throw "搜索下一页页码无效";
+                }
+
                 const lists = document.querySelectorAll(".book-list");
-                if (!lists.length && !document.querySelector(".search-label-item, .search-history-content")) {
+                if (!lists.length && (pager || !document.querySelector(".search-label-item, .search-history-content"))) {
                     throw "未找到搜索结果区域";
                 }
                 const comics = this.parseListCards(lists.flatMap((list) => list.children), {
@@ -949,7 +962,11 @@ class Manwa extends ComicSource {
                     imageSelector: ".book-list-cover-img",
                     descSelector: ".book-list-info-desc",
                 });
-                return {comics, maxPage: 1};
+                if (!comics.length && (nextLink || document.querySelector(".book-list .book-list-info-title"))) {
+                    throw "搜索结果列表无效";
+                }
+                // The numbered links are a sliding window, not the total page count.
+                return {comics, maxPage: nextLink ? undefined : page};
             });
         },
     }
