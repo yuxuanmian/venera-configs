@@ -345,9 +345,8 @@ function makeBooks(count) {
         .includes('updateCheck:')),
     [],
   );
-  assert.match(sourceCode, /version\s*=\s*["']1\.0\.8["']/);
   const index = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'index.json'), 'utf8'));
-  assert.equal(index.find((item) => item.key === 'manwa').version, '1.0.8');
+  assert.equal(index.find((item) => item.key === 'manwa').version, source.version);
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

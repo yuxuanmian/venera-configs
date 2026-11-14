@@ -2,6 +2,7 @@
 .vscode
 test/*
 !test/manwa_update_check_test.js
+!test/manwa_browse_test.js
 !test/scan/
 !test/scan/**
 !test/semantic/

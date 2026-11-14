@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.8"
+    version = "1.0.9"
 
     minAppVersion = "1.6.0"
 
@@ -698,6 +698,290 @@ class Manwa extends ComicSource {
         },
     }
 
+    readListPage = async (path, operation, parse) => {
+        const response = await Network.get(`${this.baseUrl}${path}`, this.htmlHeaders());
+        this.requireSuccess(response, operation);
+        const document = new HtmlDocument(response.body);
+        try {
+            return parse(document);
+        } finally {
+            document.dispose();
+        }
+    }
+
+    listCover = (value) => {
+        const cover = typeof value === "string" ? value.trim() : "";
+        if (!cover || /^(?:#|(?!https?:\/\/)[a-z][a-z0-9+.-]*:)/i.test(cover)
+            || this.isPlaceholderCover(cover)
+            || /(?:^|\/)imagecover3\.jpg(?:[?#]|$)/i.test(cover)) {
+            return undefined;
+        }
+        return this.toStaticUrl(cover);
+    }
+
+    parseListCard = (card, {titleSelector, imageSelector, subtitleSelector, descSelector, fallbackTitleSelector}) => {
+        const bookId = (element) => String(element?.attributes.href ?? "").match(
+            /^(?:(?:https?:)?\/\/manwa\.me)?\/book\/(\d+)\/?(?:[?#].*)?$/i,
+        )?.[1];
+        const titleElement = card.querySelector(titleSelector);
+        const titleLink = titleElement?.querySelector("a[href]");
+        const link = [titleLink, titleElement, card].find(bookId)
+            || card.querySelectorAll("a[href]").find(bookId);
+        const id = bookId(link);
+        const image = card.querySelector(imageSelector);
+        const attrs = image?.attributes ?? {};
+        const title = this.textOf(titleLink) || this.textOf(titleElement)
+            || String(link?.attributes.title ?? "").trim()
+            || String(attrs.alt ?? "").trim()
+            || (fallbackTitleSelector ? this.textOf(card.querySelector(fallbackTitleSelector)) : "");
+        if (!id || !title) {
+            return null;
+        }
+        const cover = ["data-home-src", "data-src", "data-original", "src"]
+            .map((key) => this.listCover(attrs[key])).find(Boolean) || "";
+        return new Comic({
+            id, title, cover,
+            subtitle: subtitleSelector ? this.textOf(card.querySelector(subtitleSelector)) : undefined,
+            description: descSelector ? this.textOf(card.querySelector(descSelector)) : undefined,
+        });
+    }
+
+    parseListCards = (cards, selectors) => {
+        const comics = new Map();
+        for (const card of cards) {
+            const comic = this.parseListCard(card, selectors);
+            if (comic && !comics.has(comic.id)) {
+                comics.set(comic.id, comic);
+            }
+        }
+        return [...comics.values()];
+    }
+
+    categoryTarget = (label, param = null) => ({
+        page: "category",
+        attributes: {category: label, param},
+    })
+
+    parseRanking = (document) => {
+        const cards = [];
+        for (const info of document.querySelectorAll(".rank-list .rank-list-info")) {
+            // The link and cover may be outside the info element, in the same card.
+            for (let card = info; card && !card.classNames.includes("rank-list"); card = card.parent) {
+                if (card.querySelector(".rank-list-cover-img")) {
+                    cards.push(card);
+                    break;
+                }
+            }
+        }
+        return this.parseListCards(cards, {
+            titleSelector: ".rank-list-info-title, .rank-list-info h2, .rank-list-info h3, .rank-list-info h4, .rank-list-info a[href]",
+            imageSelector: ".rank-list-cover-img",
+            fallbackTitleSelector: ".rank-list-info",
+        });
+    }
+
+    explore = [{
+        title: "漫蛙推荐",
+        type: "multiPartPage",
+        load: () => this.readListPage("/", "home", (document) => {
+            const parts = [];
+            for (const list of document.querySelectorAll(".manga-list-2")) {
+                const comics = this.parseListCards(list.children, {
+                    titleSelector: ".manga-list-2-title",
+                    imageSelector: ".manga-list-2-cover-img",
+                    subtitleSelector: ".manga-list-2-tip",
+                });
+                if (!comics.length) {
+                    continue;
+                }
+                const sectionTitle = (element) => {
+                    if (!element) return "";
+                    return this.textOf(element.classNames.includes("manga-list-title")
+                        ? element : element.querySelector(".manga-list-title"));
+                };
+                const title = sectionTitle(list.previousElementSibling)
+                    || sectionTitle(list.parent?.previousElementSibling)
+                    || `推荐 ${parts.length + 1}`;
+                parts.push({title, comics, viewMore: this.categoryTarget("全部漫画")});
+            }
+            const comics = this.parseRanking(document);
+            if (comics.length) {
+                parts.push({title: "排行榜", comics, viewMore: this.categoryTarget("排行榜", "ranking")});
+            }
+            if (!parts.length) {
+                throw "未找到首页漫画列表";
+            }
+            return parts;
+        }),
+    }]
+
+    category = {
+        title: "漫蛙分类",
+        parts: [{
+            name: "浏览",
+            type: "fixed",
+            categories: [
+                {label: "全部漫画", target: this.categoryTarget("全部漫画")},
+                {label: "排行榜", target: this.categoryTarget("排行榜", "ranking")},
+            ],
+        }],
+    }
+
+    categoryComics = {
+        optionLoader: async (_category, param) => {
+            if (param === "ranking") return [];
+            return this.readListPage("/booklist", "categories", this.parseCategoryOptions);
+        },
+
+        load: async (_category, param, options, page) => {
+            if (param === "ranking") {
+                if (page > 1) return {comics: [], maxPage: 1};
+                return this.readListPage("/", "ranking", (document) => {
+                    const comics = this.parseRanking(document);
+                    if (!comics.length) throw "未找到排行榜";
+                    return {comics, maxPage: 1};
+                });
+            }
+            return this.loadCategoryComics(options, page);
+        },
+    }
+
+    parseCategoryOptions = (document) => {
+        if (!document.querySelector(".tags, .manga-list-2, #loadMore")) {
+            throw "未找到分类页面";
+        }
+        const groups = [];
+        for (const [key, selector, label, defaultValue] of [
+            ["tag", ".tags", "标签", ""],
+            ["end", ".end", "进度", ""],
+            ["gender", ".gender", "受众", "-1"],
+            ["has_full", ".has_full", "完整版", ""],
+            ["area", ".area", "地区", ""],
+            ["sort", ".sort", "排序", "-1"],
+            ["level", ".level", "等级", ""],
+        ]) {
+            const values = new Map();
+            const param = new RegExp(`[?&]${key}=([^&#]*)`);
+            for (const link of document.querySelectorAll(`${selector} a[href]`)) {
+                const raw = String(link.attributes.href ?? "").match(param)?.[1];
+                const text = this.textOf(link);
+                if (raw == null || !text) continue;
+                try {
+                    const value = decodeURIComponent(raw.replace(/\+/g, " "));
+                    if (!values.has(value)) values.set(value, text);
+                } catch (_) {
+                    continue;
+                }
+            }
+            // The host separates the option key and label at the first hyphen.
+            const toOption = (value, text) => `${key}:${encodeURIComponent(value).replace(/-/g, "%2D")}-${text}`;
+            const options = [toOption(defaultValue, values.get(defaultValue) || "默认")];
+            for (const [value, text] of values) {
+                if (value === defaultValue) continue;
+                options.push(toOption(value, text));
+            }
+            if (options.length > 1) groups.push({label, options});
+        }
+        return groups;
+    }
+
+    loadCategoryComics = async (options, page) => {
+        const filters = {tag: "", end: "", gender: -1, has_full: "", area: "", sort: -1, level: ""};
+        for (const option of options ?? []) {
+            const index = option.indexOf(":");
+            if (index < 0) continue;
+            const key = option.slice(0, index);
+            if (Object.prototype.hasOwnProperty.call(filters, key)) {
+                filters[key] = decodeURIComponent(option.slice(index + 1));
+            }
+        }
+        const referer = `${this.baseUrl}/booklist?${this.formEncode(filters)}`;
+        const response = await Network.get(
+            `${this.baseUrl}/getBooks?${this.formEncode({page, ...filters})}`,
+            this.jsonHeaders(referer),
+        );
+        this.requireSuccess(response, "category comics");
+        const data = this.requireJsonSuccess(
+            this.parseJson(response.body, "category comics"), "category comics",
+        );
+        if (!Array.isArray(data.books)) {
+            throw "分类漫画列表无效";
+        }
+        const comics = new Map();
+        for (const book of data.books) {
+            if (book?.blocked === true) continue;
+            const id = this.normalizeId(book?.id);
+            const title = typeof book?.book_name === "string" ? book.book_name.trim() : "";
+            if (!id || !/^\d+$/.test(id) || !title) {
+                throw "分类漫画条目无效";
+            }
+            if (!comics.has(id)) {
+                comics.set(id, new Comic({
+                    id, title, cover: this.listCover(book.cover_url) || "",
+                    subtitle: typeof book.last_chapter === "string" ? book.last_chapter : undefined,
+                    description: typeof book.summary === "string" ? book.summary : undefined,
+                    tags: typeof book.tags === "string"
+                        ? this.unique(book.tags.split(/[,，]/).map((value) => value.trim())) : [],
+                }));
+            }
+        }
+        // The endpoint doesn't give a total or a verified fixed page size.
+        return {comics: [...comics.values()], maxPage: data.books.length ? undefined : page};
+    }
+
+    search = {
+        load: async (keyword, _options, page) => {
+            const query = String(keyword ?? "").trim();
+            if (!query || page > 1) {
+                return {comics: [], maxPage: 1};
+            }
+            return this.readListPage(`/search/?${this.formEncode({keyword: query})}`, "search", (document) => {
+                const lists = document.querySelectorAll(".book-list");
+                if (!lists.length && !document.querySelector(".search-label-item, .search-history-content")) {
+                    throw "未找到搜索结果区域";
+                }
+                const comics = this.parseListCards(lists.flatMap((list) => list.children), {
+                    titleSelector: ".book-list-info-title",
+                    imageSelector: ".book-list-cover-img",
+                    descSelector: ".book-list-info-desc",
+                });
+                return {comics, maxPage: 1};
+            });
+        },
+    }
+
+    readComments = async (comicId, chapterId, page, replyTo) => {
+        if (replyTo != null && String(replyTo).trim()) {
+            return {comments: []};
+        }
+        const chapter = chapterId == null ? "" : String(chapterId).trim();
+        const referer = chapter
+            ? `${this.baseUrl}/chapter/${encodeURIComponent(chapter)}`
+            : `${this.baseUrl}/book/${encodeURIComponent(String(comicId))}`;
+        const params = this.formEncode({
+            comment_id: 0, chapter_id: chapter, book_id: comicId,
+            sort: 1, page: Math.max(0, page - 1),
+        });
+        const response = await Network.get(`${this.baseUrl}/commentmore?${params}`, this.jsonHeaders(referer));
+        this.requireSuccess(response, "comments", true);
+        const data = this.requireJsonSuccess(this.parseJson(response.body, "comments"), "comments", true);
+        if (!Array.isArray(data.list)) {
+            throw "评论列表无效";
+        }
+        const items = chapter
+            ? data.list.filter((item) => String(item?.chapter_id) === chapter)
+            : data.list;
+        return {
+            comments: items.map((item) => new Comment({
+                userName: item.nick_name || item.username || "匿名用户",
+                avatar: item.cover || undefined,
+                content: item.content || "",
+                time: item.create_time || undefined,
+                score: Number(item.vote_like || 0) - Number(item.vote_dislike || 0),
+            })),
+        };
+    }
+
     parseDetailMetadata = (document) => {
         const metadata = {
             authors: [],
@@ -893,35 +1177,14 @@ class Manwa extends ComicSource {
             url: this.toStaticUrl(url),
         }),
 
-        loadComments: async (comicId, subId, page, replyTo) => {
-            if (replyTo != null && String(replyTo).trim()) {
-                return { comments: [] };
+        loadComments: (comicId, _subId, page, replyTo) => this.readComments(comicId, null, page, replyTo),
+
+        loadChapterComments: async (comicId, epId, page, replyTo) => {
+            const chapterId = this.normalizeId(epId);
+            if (!chapterId || !/^\d+$/.test(chapterId)) {
+                throw "无效章节 ID";
             }
-            const sitePage = Math.max(0, page - 1);
-            const bookUrl = `${this.baseUrl}/book/${comicId}`;
-            const response = await Network.get(
-                `${this.baseUrl}/commentmore?comment_id=0&chapter_id=`
-                + `&book_id=${encodeURIComponent(String(comicId))}&sort=1&page=${sitePage}`,
-                this.jsonHeaders(bookUrl),
-            );
-            this.requireSuccess(response, "comments", true);
-            const data = this.requireJsonSuccess(
-                this.parseJson(response.body, "comments"),
-                "comments",
-                true,
-            );
-            if (!Array.isArray(data.list)) {
-                throw "评论列表无效";
-            }
-            return {
-                comments: data.list.map((item) => new Comment({
-                    userName: item.nick_name || item.username || "匿名用户",
-                    avatar: item.cover || undefined,
-                    content: item.content || "",
-                    time: item.create_time || undefined,
-                    score: Number(item.vote_like || 0) - Number(item.vote_dislike || 0),
-                })),
-            };
+            return this.readComments(comicId, chapterId, page, replyTo);
         },
     }
 }
