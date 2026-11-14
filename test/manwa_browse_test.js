@@ -11,16 +11,42 @@ const config = fs.readFileSync(path.join(root, 'manwa.js'), 'utf8');
 function setup(respond) {
   const calls = [];
   const sandbox = {};
-  vm.runInNewContext(`${library}\n${config}\nthis.source = new Manwa();\nthis.net = Network;`, sandbox);
+  vm.runInNewContext(`${library}\n${config}\nthis.source = new Manwa();\nthis.net = Network;\nthis.ui = UI;`, sandbox);
   sandbox.net.get = async (href, headers) => {
     const url = new URL(href);
     calls.push({url, headers});
     return respond(url);
   };
-  return {source: sandbox.source, calls};
+  return {source: sandbox.source, calls, network: sandbox.net, ui: sandbox.ui};
 }
 
 const json = (value, status = 200) => ({status, body: JSON.stringify(value)});
+
+test('captcha login works without a JS validator and only posts nonblank input', async () => {
+  const {source, network, ui} = setup(() => ({status: 200, body: ''}));
+  const image = new ArrayBuffer(2);
+  const submitted = [];
+  let answer = null;
+  network.fetchBytes = async () => ({status: 200, body: image});
+  ui.showInputDialog = async (_title, validator, actualImage) => {
+    assert.equal(validator, null);
+    assert.equal(actualImage, image);
+    return answer;
+  };
+  network.post = async (url, _headers, body) => {
+    assert.equal(new URL(url).pathname, '/login');
+    submitted.push(new URLSearchParams(body).get('captcha'));
+    return json({err: 0});
+  };
+
+  await assert.rejects(source.account.login('test-user', 'test-password'), /已取消验证码输入/);
+  answer = '  ';
+  await assert.rejects(source.account.login('test-user', 'test-password'), /请输入验证码/);
+  assert.deepEqual(submitted, []);
+  answer = '  A1B2  ';
+  assert.equal(await source.account.login('test-user', 'test-password'), 'ok');
+  assert.deepEqual(submitted, ['A1B2']);
+});
 
 test('category uses one-based pages and preserves empty and negative defaults', async () => {
   const {source, calls} = setup(({pathname, searchParams}) => {

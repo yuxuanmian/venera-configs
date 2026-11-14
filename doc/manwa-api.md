@@ -85,7 +85,7 @@ GET /captcha
 
 1. 先请求登录页，建立当前域名的初始会话。
 2. 通过 <code>Network.fetchBytes('GET', captchaUrl, ...)</code> 获取验证码的 ArrayBuffer。
-3. 使用 <code>UI.showInputDialog</code> 展示该字节数组，由用户手工输入验证码。
+3. 使用 <code>UI.showInputDialog</code> 展示该字节数组，由用户手工输入验证码。传入空校验回调以兼容旧版 App，弹窗返回后检查取消和空输入。
 4. 以表单编码提交账号、密码和验证码。
 5. 根据 JSON 中的 <code>err</code> 判断结果；失败时展示 <code>msg</code>、重新获取验证码，不要复用旧图。
 

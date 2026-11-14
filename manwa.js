@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.9"
+    version = "1.0.10"
 
     minAppVersion = "1.6.0"
 
@@ -559,11 +559,15 @@ class Manwa extends ComicSource {
 
             const captchaText = await UI.showInputDialog(
                 "请输入图片验证码",
-                (value) => String(value || "").trim() ? null : "请输入验证码",
+                null,
                 captcha.body,
             );
-            if (captchaText == null || !String(captchaText).trim()) {
+            if (captchaText == null) {
                 throw "已取消验证码输入";
+            }
+            const captchaCode = String(captchaText).trim();
+            if (!captchaCode) {
+                throw "请输入验证码";
             }
 
             const response = await Network.post(
@@ -572,7 +576,7 @@ class Manwa extends ComicSource {
                 this.formEncode({
                     username: account,
                     password: pwd,
-                    captcha: String(captchaText).trim(),
+                    captcha: captchaCode,
                 }),
             );
             this.requireSuccess(response, "login");
