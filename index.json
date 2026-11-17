@@ -3,13 +3,13 @@
         "name": "拷贝漫画",
         "fileName": "copy_manga.js",
         "key": "copy_manga",
-        "version": "1.4.1"
+        "version": "1.4.2"
     },
     {
         "name": "拷贝漫画(多账号)",
         "fileName": "copy_manga_multi_accounts.js",
         "key": "copy_manga_multi",
-        "version": "1.4.1"
+        "version": "1.4.2"
     },
     {
         "name": "Komiic",
