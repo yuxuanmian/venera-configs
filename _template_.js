@@ -2,7 +2,7 @@
 
 /**
  * @typedef {Object} PageJumpTarget
- * @Property {string} page - The page name (search, category)
+ * @Property {string} page - The page name (search, category, ranking, tagSearch)
  * @Property {Object} attributes - The attributes of the page
  *
  * @example
@@ -278,7 +278,8 @@ class NewComicSource extends ComicSource {
                 // }
             }
         ],
-        // enable ranking page
+        // Add the ranking entry backed by categoryComics.ranking.
+        // APP.supportsRankingPageTarget also enables { page: "ranking" } links.
         enableRankingPage: false,
     }
 

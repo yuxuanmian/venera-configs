@@ -11,7 +11,7 @@ const config = fs.readFileSync(path.join(root, 'manwa.js'), 'utf8');
 function setup(respond, parseHtml) {
   const calls = [];
   const sandbox = {parseHtml};
-  vm.runInNewContext(`${library}\n${config}\nthis.source = new Manwa();\nthis.net = Network;\nthis.ui = UI;`, sandbox);
+  vm.runInNewContext(`${library}\n${config}\nthis.source = new Manwa();\nthis.net = Network;\nthis.ui = UI;\nthis.app = APP;`, sandbox);
   if (parseHtml) {
     vm.runInContext('HtmlDocument = class { constructor(body) { return parseHtml(body); } };', sandbox);
   }
@@ -20,7 +20,7 @@ function setup(respond, parseHtml) {
     calls.push({url, headers});
     return respond(url);
   };
-  return {source: sandbox.source, calls, network: sandbox.net, ui: sandbox.ui};
+  return {source: sandbox.source, calls, network: sandbox.net, ui: sandbox.ui, app: sandbox.app};
 }
 
 const json = (value, status = 200) => ({status, body: JSON.stringify(value)});
@@ -290,16 +290,16 @@ function rankingDocument() {
   return {querySelector: (selector) => lists.get(selector), dispose() {}};
 }
 
-test('the ranking category displays the selected HTML list and defaults to popularity', async () => {
+test('the shared ranking page displays the selected HTML list and defaults to popularity', async () => {
   const {source, calls} = setup(() => ({status: 200, body: 'ranking'}), rankingDocument);
-  const entry = source.category.parts[0].categories.find(({label}) => label === '排行榜');
-  const {category, param} = entry.target.attributes;
-  const groups = await source.categoryComics.optionLoader(category, param);
-  assert.deepEqual(Array.from(groups[0].options), ['hot-人气榜', 'newest-新番榜', 'end-完结榜']);
+  const ranking = source.categoryComics.ranking;
+  assert.equal(source.category.enableRankingPage, true);
+  assert.deepEqual(Array.from(source.category.parts[0].categories, ({label}) => label), ['全部漫画']);
+  assert.deepEqual(Array.from(ranking.options), ['hot-人气榜', 'newest-新番榜', 'end-完结榜']);
   assert.equal(calls.length, 0);
 
-  for (const [options, id] of [[[], '101'], [['newest'], '201'], [['end'], '301']]) {
-    const result = await source.categoryComics.load(category, param, options, 1);
+  for (const [type, id] of [[undefined, '101'], ['newest', '201'], ['end', '301']]) {
+    const result = await ranking.load(type, 1);
     assert.equal(result.maxPage, undefined);
     assert.deepEqual(Array.from(result.comics, ({id}) => id), [id]);
     const [comic] = result.comics;
@@ -311,6 +311,35 @@ test('the ranking category displays the selected HTML list and defaults to popul
   assert.deepEqual(calls.map(({url}) => url.pathname + url.search), ['/rank', '/rank', '/rank']);
 });
 
+test('the ranking preview links to the shared page with a working legacy category fallback', async () => {
+  const title = {text: '榜单预览作品', attributes: {}, querySelector: () => null};
+  const cover = {attributes: {'data-original': '/static/preview.webp'}};
+  const entry = {
+    attributes: {href: '/book/301'},
+    classNames: ['rank-list-info'],
+    querySelector: (selector) => selector === '.rank-list-cover-img' ? cover : title,
+  };
+  const {source, app} = setup(
+    ({pathname}) => ({status: 200, body: pathname}),
+    (body) => body === '/rank' ? rankingDocument() : {
+      querySelectorAll: (selector) => selector === '.rank-list .rank-list-info' ? [entry] : [],
+      dispose() {},
+    },
+  );
+  const [modern] = await source.explore[0].load();
+  assert.equal(modern.viewMore.page, 'ranking');
+
+  delete app.supportsRankingPageTarget;
+  const [legacy] = await source.explore[0].load();
+  assert.equal(legacy.viewMore.page, 'category');
+  const {category, param} = legacy.viewMore.attributes;
+  assert.equal(param, 'ranking');
+  const [group] = await source.categoryComics.optionLoader(category, param);
+  assert.deepEqual(Array.from(group.options), Array.from(source.categoryComics.ranking.options));
+  const result = await source.categoryComics.load(category, param, ['end'], 1);
+  assert.equal(result.comics[0].id, '301');
+});
+
 test('ranking uses the site scroll page numbers and stops at an empty page or the site limit', async () => {
   const book = {
     link: '/book/401', img_url: 'https://mwappimgs.cc/static/401.webp?v=12',
@@ -319,7 +348,7 @@ test('ranking uses the site scroll page numbers and stops at an empty page or th
   const {source, calls} = setup(({searchParams}) => json({
     data: searchParams.get('page') === '7' ? [] : [book, {...book, book_name: '重复条目'}],
   }));
-  const load = (type, page) => source.categoryComics.load('排行榜', 'ranking', [type], page);
+  const load = source.categoryComics.ranking.load;
   const second = await load('hot', 2);
   const empty = await load('newest', 3);
   const last = await load('end', 16);
@@ -347,7 +376,7 @@ test('ranking uses the site scroll page numbers and stops at an empty page or th
 
 test('ranking reports invalid HTML, JSON, and HTTP responses as errors', async () => {
   const load = (response, page = 2, parseHtml) => setup(() => response, parseHtml)
-    .source.categoryComics.load('排行榜', 'ranking', ['hot'], page);
+    .source.categoryComics.ranking.load('hot', page);
   await assert.rejects(load({status: 200, body: ''}, 1, () => ({
     querySelector: () => null,
     dispose() {},

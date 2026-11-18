@@ -9,7 +9,7 @@
 | 功能 | 已观察到的数据来源 | 最小适配状态 |
 | --- | --- | --- |
 | 首页推荐与排行榜预览 | 首页 HTML | `1.0.9` 接入发现页 |
-| 完整排行榜 | `/rank` HTML、`/rank?type=...&page=N` JSON | `1.0.13` 支持切榜与翻页 |
+| 完整排行榜 | `/rank` HTML、`/rank?type=...&page=N` JSON | `1.0.13` 支持切榜与翻页，`1.0.14` 接入 App 的共用排行榜 |
 | 关键词搜索 | 搜索页 HTML | `1.0.9` 接入搜索，`1.0.11` 支持翻页 |
 | 分类浏览 | 分类页 HTML、`/getBooks` JSON | `1.0.9` 接入，筛选来自分类页的实际链接 |
 | 登录与图片验证码 | 登录 HTML、验证码图片、登录 JSON | 可实现 |
@@ -42,7 +42,7 @@
 | 站点能力 | Venera 源字段/回调 |
 | --- | --- |
 | 首页推荐和排行榜 | <code>explore</code> |
-| 完整排行榜 | <code>categoryComics.optionLoader</code>、<code>categoryComics.load</code>（<code>param=ranking</code>） |
+| 完整排行榜 | <code>category.enableRankingPage</code>、<code>categoryComics.ranking</code> |
 | 分类和筛选 | <code>category</code>、<code>categoryComics.optionLoader</code>、<code>categoryComics.load</code> |
 | 关键词搜索 | <code>search.load</code> |
 | 登录 | <code>account.login</code> |
@@ -62,6 +62,8 @@
 - `GET /`：分别解析 `.manga-list-2` 推荐区和 `.rank-list` 榜单。每个区块按原站顺序展示；只接受指向漫蛙作品详情的链接，封面优先取懒加载属性。
 
 - `GET /rank`：2026-11-18 的抓包中，`.rank-list[data-type]` 分别包含人气榜 `hot`、新番榜 `newest` 和完结榜 `end`，每榜预载 50 条。Venera 的排行榜默认显示人气榜，切换选项时读取对应榜单。
+
+- 发现页的「查看更多」在支持 `APP.supportsRankingPageTarget` 的 App 中打开共用排行榜。旧版 App 通过分类页的 `param=ranking` 打开同一批数据。
 
 - `GET /rank?type=...&page=N`：站点滚动加载从 `page=6` 开始，页面脚本最多请求 `page=20`。已观察到 `type=hot&page=6` 返回 `{data: [...]}`，条目包含 `link`、`img_url`、`book_name` 和 `description`。Venera 第 1 页读取 HTML，后续页码加 4 后请求 JSON，收到空数组或到达脚本上限时结束。
 - `GET /booklist`：从分类页的筛选链接读取真实参数值。未在 HTML 中提供可解析值的筛选组不会显示。

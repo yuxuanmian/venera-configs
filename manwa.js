@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.13"
+    version = "1.0.14"
 
     minAppVersion = "1.6.0"
 
@@ -874,7 +874,10 @@ class Manwa extends ComicSource {
         ["end", "完结榜"],
     ])
 
+    rankingOptions = Array.from(this.rankingTypes, ([type, label]) => `${type}-${label}`)
+
     loadRanking = async (type, page) => {
+        type = this.rankingTypes.has(type) ? type : "hot";
         const rankUrl = `${this.baseUrl}/rank`;
         if (page === 1) {
             return this.readListPage("/rank", "ranking", (document) => {
@@ -945,7 +948,10 @@ class Manwa extends ComicSource {
             }
             const comics = this.parseRanking(document);
             if (comics.length) {
-                parts.push({title: "排行榜", comics, viewMore: this.categoryTarget("排行榜", "ranking")});
+                const viewMore = APP.supportsRankingPageTarget === true
+                    ? {page: "ranking"}
+                    : this.categoryTarget("排行榜", "ranking");
+                parts.push({title: "排行榜", comics, viewMore});
             }
             if (!parts.length) {
                 throw "未找到首页漫画列表";
@@ -956,28 +962,32 @@ class Manwa extends ComicSource {
 
     category = {
         title: "漫蛙分类",
+        enableRankingPage: true,
         parts: [{
             name: "浏览",
             type: "fixed",
             categories: [
                 {label: "全部漫画", target: this.categoryTarget("全部漫画")},
-                {label: "排行榜", target: this.categoryTarget("排行榜", "ranking")},
             ],
         }],
     }
 
     categoryComics = {
+        ranking: {
+            options: this.rankingOptions,
+            load: this.loadRanking,
+        },
+
         optionLoader: async (_category, param) => {
             if (param === "ranking") {
-                return [{options: Array.from(this.rankingTypes, ([type, label]) => `${type}-${label}`)}];
+                return [{options: this.rankingOptions}];
             }
             return this.readListPage("/booklist", "categories", this.parseCategoryOptions);
         },
 
         load: async (_category, param, options, page) => {
             if (param === "ranking") {
-                const type = this.rankingTypes.has(options?.[0]) ? options[0] : "hot";
-                return this.loadRanking(type, page);
+                return this.loadRanking(options?.[0], page);
             }
             return this.loadCategoryComics(options, page);
         },
