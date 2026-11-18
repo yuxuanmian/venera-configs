@@ -274,6 +274,89 @@ test('a malformed or failed category response is not treated as an empty page', 
   await assert.rejects(failed.source.categoryComics.load('全部漫画', null, [], 2), /HTTP 503/);
 });
 
+function rankingDocument() {
+  const lists = new Map();
+  for (const [type, id] of [['hot', 101], ['newest', 201], ['end', 301]]) {
+    // In the dedicated ranking HTML, the link wraps the entire card.
+    const fields = new Map([
+      ['.rank-list-info-right-title', {attributes: {}, text: `示例作品 ${id}`, querySelector: () => null}],
+      ['.rank-list-cover-img', {attributes: {'data-original': `/static/${id}.webp`, src: '/static/imagecover3.jpg'}}],
+      ['.rank-list-info-right-subtitle', {text: '连载中'}],
+      ['.rank-list-info-right-detail', {text: '示例简介'}],
+    ]);
+    const card = {attributes: {href: `/book/${id}`}, querySelector: (selector) => fields.get(selector)};
+    lists.set(`.rank-list[data-type="${type}"]`, {children: [card]});
+  }
+  return {querySelector: (selector) => lists.get(selector), dispose() {}};
+}
+
+test('the ranking category displays the selected HTML list and defaults to popularity', async () => {
+  const {source, calls} = setup(() => ({status: 200, body: 'ranking'}), rankingDocument);
+  const entry = source.category.parts[0].categories.find(({label}) => label === '排行榜');
+  const {category, param} = entry.target.attributes;
+  const groups = await source.categoryComics.optionLoader(category, param);
+  assert.deepEqual(Array.from(groups[0].options), ['hot-人气榜', 'newest-新番榜', 'end-完结榜']);
+  assert.equal(calls.length, 0);
+
+  for (const [options, id] of [[[], '101'], [['newest'], '201'], [['end'], '301']]) {
+    const result = await source.categoryComics.load(category, param, options, 1);
+    assert.equal(result.maxPage, undefined);
+    assert.deepEqual(Array.from(result.comics, ({id}) => id), [id]);
+    const [comic] = result.comics;
+    assert.equal(comic.title, `示例作品 ${id}`);
+    assert.equal(comic.cover, `https://mwappimgs.cc/static/${id}.webp`);
+    assert.equal(comic.subtitle, '连载中');
+    assert.equal(comic.description, '示例简介');
+  }
+  assert.deepEqual(calls.map(({url}) => url.pathname + url.search), ['/rank', '/rank', '/rank']);
+});
+
+test('ranking uses the site scroll page numbers and stops at an empty page or the site limit', async () => {
+  const book = {
+    link: '/book/401', img_url: 'https://mwappimgs.cc/static/401.webp?v=12',
+    book_name: ' 示例作品 ', description: '简介第一行\r\n第二行',
+  };
+  const {source, calls} = setup(({searchParams}) => json({
+    data: searchParams.get('page') === '7' ? [] : [book, {...book, book_name: '重复条目'}],
+  }));
+  const load = (type, page) => source.categoryComics.load('排行榜', 'ranking', [type], page);
+  const second = await load('hot', 2);
+  const empty = await load('newest', 3);
+  const last = await load('end', 16);
+  const beyond = await load('end', 17);
+
+  assert.deepEqual(calls.map(({url}) => url.pathname + url.search), [
+    '/rank?type=hot&page=6', '/rank?type=newest&page=7', '/rank?type=end&page=20',
+  ]);
+  for (const {headers} of calls) {
+    assert.equal(headers['X-Requested-With'], 'XMLHttpRequest');
+    assert.equal(headers.Referer, 'https://manwa.me/rank');
+  }
+  assert.deepEqual(Array.from(second.comics, ({id}) => id), ['401']);
+  assert.equal(second.comics[0].title, '示例作品');
+  assert.equal(second.comics[0].cover, book.img_url);
+  assert.equal(second.comics[0].description, book.description);
+  assert.equal(second.maxPage, undefined);
+  assert.equal(empty.comics.length, 0);
+  assert.equal(empty.maxPage, 3);
+  assert.equal(last.comics[0].id, '401');
+  assert.equal(last.maxPage, 16);
+  assert.equal(beyond.comics.length, 0);
+  assert.equal(beyond.maxPage, 16);
+});
+
+test('ranking reports invalid HTML, JSON, and HTTP responses as errors', async () => {
+  const load = (response, page = 2, parseHtml) => setup(() => response, parseHtml)
+    .source.categoryComics.load('排行榜', 'ranking', ['hot'], page);
+  await assert.rejects(load({status: 200, body: ''}, 1, () => ({
+    querySelector: () => null,
+    dispose() {},
+  })), /未找到排行榜/);
+  await assert.rejects(load(json({data: null})), /排行榜列表无效/);
+  await assert.rejects(load(json({data: [{link: 'https://example.com/book/401', book_name: '示例作品'}]})), /排行榜条目无效/);
+  await assert.rejects(load(json({}, 503)), /HTTP 503/);
+});
+
 test('chapter and work comments use separate scopes and zero-based site pages', async () => {
   const work = {chapter_id: 0, content: '作品评论'};
   const chapter = {chapter_id: 701, content: '章节评论', nick_name: '示例读者', vote_like: 3, vote_dislike: 1};

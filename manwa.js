@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.12"
+    version = "1.0.13"
 
     minAppVersion = "1.6.0"
 
@@ -805,10 +805,12 @@ class Manwa extends ComicSource {
         return this.toStaticUrl(cover);
     }
 
+    listBookId = (href) => String(href ?? "").match(
+        /^(?:(?:https?:)?\/\/manwa\.me)?\/book\/(\d+)\/?(?:[?#].*)?$/i,
+    )?.[1]
+
     parseListCard = (card, {titleSelector, imageSelector, subtitleSelector, descSelector, fallbackTitleSelector}) => {
-        const bookId = (element) => String(element?.attributes.href ?? "").match(
-            /^(?:(?:https?:)?\/\/manwa\.me)?\/book\/(\d+)\/?(?:[?#].*)?$/i,
-        )?.[1];
+        const bookId = (element) => this.listBookId(element?.attributes.href);
         const titleElement = card.querySelector(titleSelector);
         const titleLink = titleElement?.querySelector("a[href]");
         const link = [titleLink, titleElement, card].find(bookId)
@@ -866,6 +868,57 @@ class Manwa extends ComicSource {
         });
     }
 
+    rankingTypes = new Map([
+        ["hot", "人气榜"],
+        ["newest", "新番榜"],
+        ["end", "完结榜"],
+    ])
+
+    loadRanking = async (type, page) => {
+        const rankUrl = `${this.baseUrl}/rank`;
+        if (page === 1) {
+            return this.readListPage("/rank", "ranking", (document) => {
+                const list = document.querySelector(`.rank-list[data-type="${type}"]`);
+                const comics = this.parseListCards(list?.children ?? [], {
+                    titleSelector: ".rank-list-info-right-title",
+                    imageSelector: ".rank-list-cover-img",
+                    subtitleSelector: ".rank-list-info-right-subtitle",
+                    descSelector: ".rank-list-info-right-detail",
+                });
+                if (!comics.length) throw "未找到排行榜";
+                return {comics};
+            });
+        }
+
+        // App page 1 is HTML. The first scroll request uses site page 6.
+        const pageOffset = 6 - 2;
+        const lastPage = 20 - pageOffset;
+        if (page > lastPage) return {comics: [], maxPage: lastPage};
+
+        const params = this.formEncode({type, page: page + pageOffset});
+        const response = await Network.get(`${rankUrl}?${params}`, this.jsonHeaders(rankUrl));
+        this.requireSuccess(response, "ranking");
+        const data = this.parseJson(response.body, "ranking");
+        if (!Array.isArray(data?.data)) throw "排行榜列表无效";
+
+        const comics = new Map();
+        for (const book of data.data) {
+            const id = this.listBookId(book?.link);
+            const title = typeof book?.book_name === "string" ? book.book_name.trim() : "";
+            if (!id || !title) throw "排行榜条目无效";
+            if (!comics.has(id)) {
+                comics.set(id, new Comic({
+                    id, title, cover: this.listCover(book.img_url) || "",
+                    description: typeof book.description === "string" ? book.description : undefined,
+                }));
+            }
+        }
+        return {
+            comics: [...comics.values()],
+            maxPage: !comics.size || page === lastPage ? page : undefined,
+        };
+    }
+
     explore = [{
         title: "漫蛙推荐",
         type: "multiPartPage",
@@ -915,18 +968,16 @@ class Manwa extends ComicSource {
 
     categoryComics = {
         optionLoader: async (_category, param) => {
-            if (param === "ranking") return [];
+            if (param === "ranking") {
+                return [{options: Array.from(this.rankingTypes, ([type, label]) => `${type}-${label}`)}];
+            }
             return this.readListPage("/booklist", "categories", this.parseCategoryOptions);
         },
 
         load: async (_category, param, options, page) => {
             if (param === "ranking") {
-                if (page > 1) return {comics: [], maxPage: 1};
-                return this.readListPage("/", "ranking", (document) => {
-                    const comics = this.parseRanking(document);
-                    if (!comics.length) throw "未找到排行榜";
-                    return {comics, maxPage: 1};
-                });
+                const type = this.rankingTypes.has(options?.[0]) ? options[0] : "hot";
+                return this.loadRanking(type, page);
             }
             return this.loadCategoryComics(options, page);
         },
