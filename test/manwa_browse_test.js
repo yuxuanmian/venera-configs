@@ -8,9 +8,9 @@ const root = path.join(__dirname, '..');
 const library = fs.readFileSync(path.join(root, '_venera_.js'), 'utf8');
 const config = fs.readFileSync(path.join(root, 'manwa.js'), 'utf8');
 
-function setup(respond, parseHtml) {
+function setup(respond, parseHtml, sendMessage) {
   const calls = [];
-  const sandbox = {parseHtml};
+  const sandbox = {parseHtml, sendMessage};
   vm.runInNewContext(`${library}\n${config}\nthis.source = new Manwa();\nthis.net = Network;\nthis.ui = UI;\nthis.app = APP;`, sandbox);
   if (parseHtml) {
     vm.runInContext('HtmlDocument = class { constructor(body) { return parseHtml(body); } };', sandbox);
@@ -146,6 +146,40 @@ test('the first browse of a new day triggers the welfare request without delayin
   await source.checkinRequest;
   await source.search.load('sample', [], 1);
   assert.equal(calls.filter(({url}) => url.pathname === '/users/welfare').length, 1);
+});
+
+test('detail returns active chapter IDs from authenticated HTML and logs the counts', async () => {
+  const chapterLinks = [
+    {attributes: {href: '/chapter/701', class: 'chapteritem active', title: 'First'}},
+    {attributes: {href: '/chapter/702', class: 'chapteritem inactive', title: 'Second'}},
+    {attributes: {href: '/chapter/703', class: 'chapteritem', title: 'Third'}},
+    {attributes: {href: '/chapter/703?copy=1', class: 'chapteritem active', title: 'Duplicate'}},
+  ];
+  const logged = [];
+  const {source, calls} = setup(
+    (url) => ({status: 200, body: `var my_user_id = '${url.pathname.endsWith('/81') ? '123' : ''}';`}),
+    () => ({
+      querySelector: (selector) => ({
+        'h1.detail-main-info-title': {text: 'Sample'},
+        '.detail-main-cover img': {attributes: {'data-original': '/static/cover.webp'}},
+      })[selector] ?? null,
+      querySelectorAll: (selector) => selector === 'a.chapteritem[href^="/chapter/"]' ? chapterLinks : [],
+      dispose() {},
+    }),
+    (message) => logged.push(message),
+  );
+  source.maybeAutoCheckin = async () => {};
+
+  const authenticated = await source.comic.loadInfo('81');
+  const anonymous = await source.comic.loadInfo('82');
+  assert.deepEqual(Object.fromEntries(authenticated.chapters), {'701': 'First', '702': 'Second', '703': 'Third'});
+  assert.deepEqual([...authenticated.readChapterIds], ['701', '703']);
+  assert.equal(anonymous.readChapterIds, undefined);
+  assert.deepEqual(calls.map(({url}) => url.pathname), ['/book/81', '/book/82']);
+  assert.deepEqual(logged.filter(({title}) => title === 'Manwa chapter read').map(({content}) => content), [
+    'chapters=3 read=2 authenticated=true marker=chapteritem.active',
+    'chapters=3 read=0 authenticated=false marker=chapteritem.active',
+  ]);
 });
 
 // Stub the host DOM bridge using the captured search page structure.

@@ -663,6 +663,7 @@ class NewComicSource extends ComicSource {
     comic = {
         /**
          * load comic info
+         * Optionally include readChapterIds in ComicDetails using the same string IDs as chapters.
          * @param id {string}
          * @returns {Promise<ComicDetails>}
          */

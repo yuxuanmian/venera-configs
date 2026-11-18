@@ -331,6 +331,8 @@ favorites = {
 
 详情页虽会显示“展开全部章节”控件，但当前结论是全部章节已经包含在 HTML 中。实现时忽略该控件的显示状态，直接遍历页面中全部 <code>a.chapteritem</code> 节点即可，不需要额外请求。
 
+登录详情页的已读标记从 <code>a.chapteritem.active</code> 提取，作为 <code>readChapterIds</code> 返回。登录状态以页面脚本中的非零 <code>my_user_id</code> 为准。2026-11-18 的样本中，唯一带 <code>active</code> 的章节经用户确认已读。尚待验证未读作品会不会默认标记首章，以及同一本漫画能否返回多个标记。应用日志中的 <code>Manwa chapter read</code> 记录章节总数、命中数、登录状态和选择器。
+
 <code>comic.loadInfo</code> 的 MVP 返回值至少应包含 <code>title</code>、<code>cover</code>、<code>tags</code> 和 <code>chapters</code>，并为无数据情况返回 <code>{}</code>，而不是 <code>null</code>。
 
 ## 阅读页与图片处理

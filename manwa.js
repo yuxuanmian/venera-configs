@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.14"
+    version = "1.0.15"
 
     minAppVersion = "1.6.0"
 
@@ -1245,6 +1245,8 @@ class Manwa extends ComicSource {
                         : null;
 
                 const chapters = new Map();
+                const readChapterIds = new Set();
+                const authenticated = /\b(?:const|let|var)\s+my_user_id\s*=\s*(["']?)[1-9]\d*\1\s*;/.test(response.body);
                 for (const chapter of document.querySelectorAll(
                     'a.chapteritem[href^="/chapter/"]',
                 )) {
@@ -1252,14 +1254,21 @@ class Manwa extends ComicSource {
                     let href = String(attributes.href || "").split(/[?#]/)[0];
                     href = href.replace(/\/+$/, "");
                     const chapterId = href.substring(href.lastIndexOf("/") + 1);
-                    if (!chapterId || chapters.has(chapterId)) {
+                    if (!chapterId) {
                         continue;
                     }
-                    const chapterTitle = String(attributes.title || "").trim()
-                        || this.textOf(chapter)
-                        || chapterId;
-                    chapters.set(chapterId, chapterTitle);
+                    if (authenticated && (attributes.class || "").split(/\s+/).includes("active")) {
+                        readChapterIds.add(chapterId);
+                    }
+                    if (!chapters.has(chapterId)) {
+                        const chapterTitle = String(attributes.title || "").trim()
+                            || this.textOf(chapter)
+                            || chapterId;
+                        chapters.set(chapterId, chapterTitle);
+                    }
                 }
+                log("info", "Manwa chapter read",
+                    `chapters=${chapters.size} read=${readChapterIds.size} authenticated=${authenticated} marker=chapteritem.active`);
 
                 return new ComicDetails({
                     title,
@@ -1274,6 +1283,7 @@ class Manwa extends ComicSource {
                         "标签": contentTags,
                     },
                     chapters,
+                    readChapterIds: authenticated ? [...readChapterIds] : undefined,
                     isFavorite,
                     commentCount,
                     updateTime,
