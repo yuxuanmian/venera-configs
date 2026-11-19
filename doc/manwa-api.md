@@ -210,6 +210,8 @@ Venera <code>Comic</code> 的最小映射：
 
 <code>/getfavors</code> 本身没有总页数字段。已确认它每次最多返回固定的 <code>15</code> 本漫画；最后一批可以不足 15 本，但这不改变页大小。先从 <code>/bookshelf</code> 的 <code>.favorite-count</code> 取得已收藏总数，再按固定页大小计算：
 
+支持完整缓存的 Host 调用 `favorites.loadCachePage(page, folder, total)`。首页的 `total` 参数为空，返回实际收藏总数。该轮后续页复用这个总数，直接请求 `/getfavors`。旧 Host 继续调用 `favorites.loadComics`。
+
 ~~~javascript
 const favoritePageSize = 15;
 const maxPage = Math.ceil(favoriteCount / favoritePageSize);

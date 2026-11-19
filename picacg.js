@@ -3,7 +3,7 @@ class Picacg extends ComicSource {
 
     key = "picacg"
 
-    version = "1.0.12"
+    version = "1.0.13"
 
     minAppVersion = "2.0.0"
 
@@ -1200,9 +1200,24 @@ class Picacg extends ComicSource {
         ]
     }
 
+    _loadFavoriteListing = async (page) => {
+        const sort = this.loadSetting('favoriteSort')
+        const path = `users/favourite?page=${page}&s=${sort}`
+        const res = await Network.get(
+            `${this.loadSetting('base_url')}/${path}`,
+            this.buildHeaders('GET', path, this.loadData('token'))
+        )
+        if (res.status === 401) throw 'Login expired'
+        if (res.status !== 200) throw 'Invalid status code: ' + res.status
+        const listing = JSON.parse(res.body)?.data?.comics
+        if (!listing || !Array.isArray(listing.docs)) throw 'Invalid favorite list'
+        return listing
+    }
+
     /// 收藏
     favorites = {
         multiFolder: false,
+        cacheSettings: ['favoriteSort', 'base_url'],
         /// 添加或者删除收藏
         addOrDelFavorite: async (comicId, folderId, isAdding) => {
             let res = await Network.post(
@@ -1220,25 +1235,28 @@ class Picacg extends ComicSource {
         },
         /// 加载漫画
         loadComics: async (page, folder) => {
-            let sort = this.loadSetting('favoriteSort')
-            let res = await Network.get(
-                `${this.loadSetting('base_url')}/users/favourite?page=${page}&s=${sort}`,
-                this.buildHeaders('GET', `users/favourite?page=${page}&s=${sort}`, this.loadData('token'))
-            )
-            if(res.status === 401) {
-                throw `Login expired`
+            const listing = await this._loadFavoriteListing(page)
+            return {comics: listing.docs.map(comic => this.parseComic(comic)), maxPage: listing.pages}
+        },
+        loadCachePage: async (page) => {
+            const listing = await this._loadFavoriteListing(page)
+            const integer = (value) => {
+                if (typeof value !== 'number' &&
+                    !(typeof value === 'string' && /^\d+$/.test(value))) return null
+                const number = Number(value)
+                return Number.isSafeInteger(number) && number >= 0 ? number : null
             }
-            if (res.status !== 200) {
-                throw 'Invalid status code: ' + res.status
+            const pages = integer(listing.pages)
+            const total = integer(listing.total)
+            if (pages == null || (listing.total != null && total == null) ||
+                (listing.page != null && integer(listing.page) !== page) ||
+                (listing.docs.length === 0 && !(page === 1 && pages <= 1))) {
+                throw 'Invalid favorite pagination'
             }
-            let data = JSON.parse(res.body)
-            let comics = []
-            data.data.comics.docs.forEach(c => {
-                comics.push(this.parseComic(c))
-            })
             return {
-                comics: comics,
-                maxPage: data.data.comics.pages
+                comics: listing.docs.map(comic => this.parseComic(comic)),
+                maxPage: listing.docs.length === 0 ? 0 : pages,
+                total,
             }
         }
     }

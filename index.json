@@ -27,7 +27,7 @@
         "name": "Picacg",
         "fileName": "picacg.js",
         "key": "picacg",
-        "version": "1.0.12"
+        "version": "1.0.13"
     },
     {
         "name": "nhentai",
@@ -46,7 +46,7 @@
         "name": "ehentai",
         "fileName": "ehentai.js",
         "key": "ehentai",
-        "version": "1.1.8"
+        "version": "1.2.1"
     },
     {
         "name": "禁漫天堂",
@@ -206,7 +206,7 @@
         "name": "漫蛙",
         "fileName": "manwa.js",
         "key": "manwa",
-        "version": "1.0.15",
+        "version": "1.0.16",
         "description": "支持推荐、排行榜、分类、搜索、登录、收藏、阅读和只读评论。"
     }
 ]

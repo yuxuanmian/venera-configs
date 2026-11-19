@@ -7,7 +7,7 @@ class Ehentai extends ComicSource {
     // unique id of the source
     key = "ehentai"
 
-    version = "1.2.0"
+    version = "1.2.1"
 
     minAppVersion = "1.5.3"
 
@@ -172,14 +172,8 @@ class Ehentai extends ComicSource {
     }
 
     getStarsFromPosition(position) {
-        let i = 0;
-        while (position[i] !== ";") {
-            i++;
-            if (i === position.length) {
-                break;
-            }
-        }
-        switch (position.substring(0, i)) {
+        const style = typeof position === 'string' ? position.split(';', 1)[0] : '';
+        switch (style) {
             case "background-position:0px -1px":
                 return 5;
             case "background-position:0px -21px":
@@ -221,7 +215,7 @@ class Ehentai extends ComicSource {
      * @param isLeaderBoard {boolean}
      * @returns {Promise<{comics: Comic[], next: string?}>}
      */
-    async getGalleries(url, isLeaderBoard) {
+    async getGalleries(url, isLeaderBoard, favoriteFolder = null) {
         try {
             this.checkEHEvent();
         } catch (_) {}
@@ -248,7 +242,19 @@ class Ehentai extends ComicSource {
             }
             throw "Failed to load page"
         }
-        let document = new HtmlDocument(res.body);
+        const document = new HtmlDocument(res.body);
+        try {
+            const result = this.parseGalleryDocument(document, url, t);
+            if (favoriteFolder != null) {
+                return this.favoriteCacheMetadata(document, result, favoriteFolder);
+            }
+            return result;
+        } finally {
+            document.dispose();
+        }
+    }
+
+    parseGalleryDocument(document, url, t) {
         let galleries = [];
 
         // compact mode
@@ -569,11 +575,66 @@ class Ehentai extends ComicSource {
         enableTagsSuggestions: true,
     }
 
+    favoritePageUrl(next, folder) {
+        if (typeof folder !== 'string' || !/^(?:-1|[0-9])$/.test(folder)) {
+            throw 'Invalid favorite folder';
+        }
+        const home = `${this.baseUrl}/favorites.php`;
+        if (next == null) return folder === '-1' ? home : `${home}?favcat=${folder}`;
+        if (typeof next !== 'string' || next.length > 4096) throw 'Invalid favorite cursor';
+        let url = next.trim();
+        if (url.startsWith('?')) url = home + url;
+        if (url.startsWith('/favorites.php?')) url = this.baseUrl + url;
+        if (url.startsWith('favorites.php?')) url = `${this.baseUrl}/${url}`;
+        if (!url.startsWith(`${home}?`) || /[\s#\\]/.test(url)) {
+            throw 'Invalid favorite cursor';
+        }
+        const categories = url.slice(home.length + 1).split('&')
+            .filter(param => param.startsWith('favcat='))
+            .map(param => param.slice(7));
+        if (categories.length > 1 || (categories.length === 1 &&
+            !(folder === '-1' ? ['-1', 'all', ''].includes(categories[0]) : categories[0] === folder))) {
+            throw 'Favorite cursor changed folders';
+        }
+        return categories.length === 0 && folder !== '-1' ? `${url}&favcat=${folder}` : url;
+    }
+
+    favoriteCacheMetadata(document, result, folder) {
+        const categories = document.querySelectorAll('div.fp')
+            .filter(item => item.text.trim() !== 'Show All Favorites');
+        if (categories.length !== 10) throw 'Invalid favorite list';
+        const counts = categories.map(item => {
+            const text = item.children[0]?.text?.trim();
+            if (!text || !/^(?:\d+|\d{1,3}(?:,\d{3})+)$/.test(text)) return null;
+            const count = Number(text.replace(/,/g, ''));
+            return Number.isSafeInteger(count) ? count : null;
+        });
+        const total = folder === '-1'
+            ? counts.includes(null) ? null : counts.reduce((sum, count) => sum + count, 0)
+            : counts[Number(folder)];
+        const rows = document.querySelectorAll(
+            'table.itg.gltc > tbody > tr, table.itg.glte > tbody > tr, table.itg.gltm > tbody > tr, div.gl1t'
+        ).filter(row => row.querySelector('a[href*="/g/"]'));
+        const next = result.next?.trim() || null;
+        if (rows.length !== result.comics.length ||
+            (result.comics.length === 0 && (total !== 0 || next !== null))) {
+            throw 'Incomplete favorite gallery list';
+        }
+        return {
+            comics: result.comics,
+            next: next === null ? null : this.favoritePageUrl(next, folder),
+            total: Number.isSafeInteger(total) ? total : null,
+        };
+    }
+
     // favorite related
     favorites = {
         // whether support multi folders
         multiFolder: true,
         singleFolderForSingleComic: true,
+        cacheSettings: ['domain'],
+        cacheAllFolder: '-1',
+        cacheAccountSetting: 'domain',
         /**
          * add or delete favorite.
          * throw `Login expired` to indicate login expired, App will automatically re-login and re-add/delete favorite
@@ -662,6 +723,9 @@ class Ehentai extends ComicSource {
                 url += `?favcat=${folder}`
             }
             return this.getGalleries(next ?? url, false);
+        },
+        loadCacheNext: (next, folder) => {
+            return this.getGalleries(this.favoritePageUrl(next, folder), false, folder);
         }
     }
 

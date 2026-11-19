@@ -139,6 +139,18 @@ function makeBooks(count) {
   assert.equal(page.maxPage, 3);
   assert.equal(page.comics[0].favoriteUpdate.updateTime, undefined);
 
+  calls.length = 0;
+  const home = await source.favorites.loadCachePage(1, '', null);
+  const tail = await source.favorites.loadCachePage(3, '', home.total);
+  assert.equal(home.total, 31);
+  assert.equal(tail.comics[0].id, '31');
+  assert.equal(calls.filter((url) => url.endsWith('/bookshelf')).length, 1);
+  assert.deepEqual(calls.filter((url) => url.includes('/getfavors?')).map((url) => {
+    const params = new URL(url).searchParams;
+    assert.equal(params.get('order'), '1');
+    return params.get('page');
+  }), ['0', '30']);
+
   const businessPhraseBook = book(1);
   businessPhraseBook.book_name = '请等待的漫画';
   businessPhraseBook.last_chapter.chapter_name = '系统繁忙章节';

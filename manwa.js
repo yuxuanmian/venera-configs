@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.15"
+    version = "1.0.16"
 
     minAppVersion = "1.6.0"
 
@@ -496,7 +496,7 @@ class Manwa extends ComicSource {
             throw "未找到收藏总数";
         }
         const count = Number(match[1]);
-        if (!Number.isFinite(count)) {
+        if (!Number.isSafeInteger(count)) {
             throw "收藏总数无效";
         }
         return count;
@@ -677,14 +677,16 @@ class Manwa extends ComicSource {
         multiFolder: false,
         singleFolderForSingleComic: false,
 
-        loadComics: async (page, folder) => {
+        loadComics: (page) => this.favorites.loadCachePage(page),
+
+        loadCachePage: async (page, _folder, total = null) => {
             void this.maybeAutoCheckin();
             const pageIndex = Math.max(0, page - 1);
             const siteOffset = pageIndex * this.favoritePageSize;
             const bookshelfUrl = `${this.baseUrl}/bookshelf`;
-            const favoriteCount = await this.loadFavoriteCount();
+            const favoriteCount = total ?? await this.loadFavoriteCount();
             if (favoriteCount === 0) {
-                return { comics: [], maxPage: 0 };
+                return { comics: [], maxPage: 0, total: 0 };
             }
             const books = await this.loadFavoriteBooks(siteOffset, bookshelfUrl);
             const expectedLength = Math.min(
@@ -708,6 +710,7 @@ class Manwa extends ComicSource {
             return {
                 comics,
                 maxPage: Math.ceil(favoriteCount / this.favoritePageSize),
+                total: favoriteCount,
             };
         },
 
