@@ -212,6 +212,8 @@ Venera <code>Comic</code> 的最小映射：
 
 支持完整缓存的 Host 调用 `favorites.loadCachePage(page, folder, total)`。首页的 `total` 参数为空，返回实际收藏总数。该轮后续页复用这个总数，直接请求 `/getfavors`。旧 Host 继续调用 `favorites.loadComics`。
 
+新版收藏卡片读取 `loadCachePage` 返回的 `sourceUnread` 字典。键为本页漫画 ID，值直接取布尔型 `is_new`，字段缺失时省略该条目。追更扫描仍走原有的 `scan.collection`。
+
 ~~~javascript
 const favoritePageSize = 15;
 const maxPage = Math.ceil(favoriteCount / favoritePageSize);

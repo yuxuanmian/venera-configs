@@ -151,6 +151,19 @@ function makeBooks(count) {
     return params.get('page');
   }), ['0', '30']);
 
+  const fullOnly = book(1, {isNew: false, fullIsNew: true});
+  const regular = book(2, {isNew: true, fullIsNew: false});
+  const missing = book(3, {fullIsNew: true});
+  delete missing.is_new;
+  const notBoolean = book(4, {isNew: 'true', fullIsNew: false});
+  const badges = createHarness({
+    count: 4,
+    booksByOffset: {0: [fullOnly, regular, missing, notBoolean]},
+  });
+  const badgePage = await badges.source.favorites.loadCachePage(1, '', null);
+  assert.deepEqual({...badgePage.sourceUnread}, {'1': false, '2': true});
+  assert.equal(badgePage.comics.length, 4);
+
   const businessPhraseBook = book(1);
   businessPhraseBook.book_name = '请等待的漫画';
   businessPhraseBook.last_chapter.chapter_name = '系统繁忙章节';

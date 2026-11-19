@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.16"
+    version = "1.0.17"
 
     minAppVersion = "1.6.0"
 
@@ -698,12 +698,16 @@ class Manwa extends ComicSource {
             }
 
             const ids = new Set();
+            const sourceUnread = Object.create(null);
             const comics = books.map((book) => {
                 const comic = this.parseFavoriteComic(book);
                 if (ids.has(comic.id)) {
                     throw "收藏夹存在重复或空漫画 ID";
                 }
                 ids.add(comic.id);
+                if (typeof book.is_new === "boolean") {
+                    sourceUnread[comic.id] = book.is_new;
+                }
                 return comic;
             });
 
@@ -711,6 +715,7 @@ class Manwa extends ComicSource {
                 comics,
                 maxPage: Math.ceil(favoriteCount / this.favoritePageSize),
                 total: favoriteCount,
+                sourceUnread,
             };
         },
 
