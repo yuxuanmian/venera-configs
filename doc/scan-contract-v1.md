@@ -68,7 +68,7 @@ actually produces (Contract C6.1): a declared but never-produced field, a
 produced but undeclared field, or a granularity that does not match the real
 value format all fail the test suite.
 
-## Mapping table (mirrored from the parent's S1.3)
+## Shipped field mappings
 
 | Branch | Standard field | Source field | Granularity |
 | --- | --- | --- | --- |
@@ -76,6 +76,7 @@ value format all fail the test suite.
 | `manwa.collection` | `sourceUnread` | `is_new` \| `full_is_new` | — |
 | `picacg.comic` | `updatedAt` | `updated_at` | `@day` (weakest real representation) |
 | `picacg.collection` | `chapterCount` | `epsCount` | — |
+| `copy_manga.collection` | `latestChapterId` | `comic.last_chapter_id` | — |
 
 The callback accepts only a JSON request with `GET` or `POST`, an HTTP(S) URL,
 string headers, and an optional string body. It is the Host-owned path for
@@ -97,6 +98,11 @@ collection branch can declare `itemFailures: true` and return a mix of
 mutually exclusive and share the same ID validation. Picacg uses the
 collection branch on those hosts and retains its per-comic branch on older
 hosts. Manwa keeps the observation-only page contract.
+
+Copy Manga also uses item failures. It scans the bookshelf in fixed
+`-datetime_modifier` order, verifies the total and ordered first-page comic
+IDs at the end, and reports a missing chapter ID on the affected comic.
+The bookshelf's day-level `datetime_updated` stays in the normal comic summary.
 
 Picacg 1.0.12 fetches the first and verification pages separately. A later
 data load may fetch up to two adjacent HTTP pages concurrently and return

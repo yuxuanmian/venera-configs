@@ -4,7 +4,7 @@ class CopyManga extends ComicSource {
 
     key = "copy_manga"
 
-    version = "1.4.5"
+    version = "1.4.6"
 
     minAppVersion = "1.6.0"
 
@@ -118,16 +118,21 @@ class CopyManga extends ComicSource {
         return data.results;
     }
 
-    parseApiPage(response, operation, offset) {
+    readApiPage(response, operation, offset) {
         const result = this.checkWebResponse(response, operation);
         const limit = CopyManga.apiPageSize;
         if (!Array.isArray(result?.list) || result.limit !== limit || result.offset !== offset ||
             !Number.isSafeInteger(result.total) || result.total < 0 || result.list.length > limit) {
             throw operation + ": invalid pagination";
         }
+        return result;
+    }
+
+    parseApiPage(response, operation, offset) {
+        const result = this.readApiPage(response, operation, offset);
         return {
             comics: result.list.map(item => this.parseComicSummary(item.comic ?? item)),
-            maxPage: Math.max(1, Math.ceil(result.total / limit)),
+            maxPage: Math.max(1, Math.ceil(result.total / CopyManga.apiPageSize)),
             total: result.total,
         };
     }
@@ -1199,6 +1204,15 @@ class CopyManga extends ComicSource {
         ]
     }
 
+    favoritePageRequest(origin, token, offset, ordering) {
+        return {
+            method: "GET",
+            url: origin + "/api/v3/member/collect/comics?limit=" + CopyManga.apiPageSize + "&offset=" + offset +
+                "&free_type=1&ordering=" + encodeURIComponent(ordering),
+            headers: {...this.webApiHeaders(token), "Referer": origin + "/web/person/shujia"},
+        };
+    }
+
     favorites = {
         multiFolder: false,
         cacheSettings: ["favorites_ordering", "base_url"],
@@ -1226,13 +1240,9 @@ class CopyManga extends ComicSource {
             const token = this.sessionToken(origin);
             if (!token) throw "Login expired";
             const ordering = this.loadSetting("favorites_ordering") || "-datetime_updated";
-            const limit = CopyManga.apiPageSize;
-            const offset = (page - 1) * limit;
-            const response = await Network.get(
-                origin + "/api/v3/member/collect/comics?limit=" + limit + "&offset=" + offset +
-                    "&free_type=1&ordering=" + encodeURIComponent(ordering),
-                {...this.webApiHeaders(token), "Referer": origin + "/web/person/shujia"},
-            );
+            const offset = (page - 1) * CopyManga.apiPageSize;
+            const {url, headers} = this.favoritePageRequest(origin, token, offset, ordering);
+            const response = await Network.get(url, headers);
             const result = this.parseApiPage(response, "Favorites", offset);
             const observations = this.favoriteObservations(origin, token);
             if (observations) {
@@ -1253,6 +1263,82 @@ class CopyManga extends ComicSource {
             return {comics, total, maxPage: Math.ceil(total / limit)};
         },
     }
+
+    isValidScanId(value) {
+        return typeof value === "string" && value.length > 0 && value === value.trim() &&
+            !value.includes("\0") && [...value].length <= 1024;
+    }
+
+    scan = typeof SCAN_COLLECTION_ITEM_FAILURES_V1 !== "undefined" && SCAN_COLLECTION_ITEM_FAILURES_V1 === true ? {
+        primary: "collection",
+        collection: {
+            itemFailures: true,
+            fieldSource: {latestChapterId: "comic.last_chapter_id"},
+            load: async (collectionKey, cursor, request) => {
+                if (collectionKey !== "default" || typeof request !== "function") {
+                    return {failure: {message: "Favorites scan: invalid collection"}};
+                }
+                const limit = CopyManga.apiPageSize;
+                // A cursor with a null offset rechecks the first page without emitting its items again.
+                if (cursor !== null && (!cursor || !Number.isSafeInteger(cursor.total) || cursor.total < 0 ||
+                    !Array.isArray(cursor.headIds) || cursor.headIds.length !== Math.min(limit, cursor.total) ||
+                    !cursor.headIds.every(id => this.isValidScanId(id)) ||
+                    (cursor.offset !== null && (!Number.isSafeInteger(cursor.offset) ||
+                        cursor.offset <= 0 || cursor.offset >= cursor.total || cursor.offset % limit !== 0)))) {
+                    return {failure: {message: "Favorites scan: invalid cursor"}};
+                }
+                const origin = this.apiUrl;
+                const token = this.sessionToken(origin);
+                if (!token) return {failure: {message: "Login expired"}};
+
+                const offset = cursor?.offset ?? 0;
+                let response;
+                try {
+                    response = await request(this.favoritePageRequest(origin, token, offset, "-datetime_modifier"));
+                } catch (error) {
+                    return {failure: error?.scanFailure ?? {message: "Favorites scan request failed"}};
+                }
+                if (this.apiUrl !== origin || this.sessionToken(origin) !== token) {
+                    return {failure: {message: "Favorites scan: session changed"}};
+                }
+
+                let page;
+                try {
+                    page = this.readApiPage(response, "Favorites scan", offset);
+                } catch (error) {
+                    const failure = {message: typeof error === "string" ? error : "Favorites scan: invalid response"};
+                    if (Number.isInteger(response?.status) && response.status !== 200) failure.httpStatus = response.status;
+                    if (response?.status === 200 && error === "Login expired") failure.sourceCode = "401";
+                    return {failure};
+                }
+                const {list, total} = page;
+                if ((cursor !== null && total !== cursor.total) || list.length !== Math.min(limit, total - offset)) {
+                    return {failure: {message: "Favorites scan: inconsistent pagination"}};
+                }
+                const ids = list.map(item => item?.comic?.path_word);
+                if (!ids.every(id => this.isValidScanId(id)) || new Set(ids).size !== ids.length) {
+                    return {failure: {message: "Favorites scan: invalid or duplicate comic ID"}};
+                }
+                if (cursor?.offset === null) {
+                    if (!ids.every((id, index) => id === cursor.headIds[index])) {
+                        return {failure: {message: "Favorites scan: first page changed"}};
+                    }
+                    return {items: [], next: null};
+                }
+
+                const items = list.map(({comic}, index) => {
+                    const comicId = ids[index];
+                    const latestChapterId = comic.last_chapter_id;
+                    return this.isValidScanId(latestChapterId)
+                        ? {comicId, observation: {update: {latestChapterId}}}
+                        : {comicId, failure: {message: "Favorites scan: invalid or missing latest chapter ID"}};
+                });
+                const nextOffset = offset + list.length;
+                const next = {offset: nextOffset < total ? nextOffset : null, total, headIds: cursor?.headIds ?? ids};
+                return {items, next};
+            },
+        },
+    } : null
 
     comic = {
         loadInfo: async (id) => {
