@@ -4,41 +4,23 @@ class CopyManga extends ComicSource {
 
     key = "copy_manga"
 
-    version = "1.4.2"
+    version = "1.4.3"
 
     minAppVersion = "1.6.0"
 
     url = "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/copy_manga.js"
 
-    async getReqID() {
-        if (this.copyRegion === "0") {
-            return "";
-        }
-        const reqIdUrl = "https://marketing.aiacgn.com/api/v2/adopr/query3/?format=json&ident=200100001";
-        let reqId = "";
-        try {
-            const response = await Network.get(reqIdUrl, this.webHeaders);
-
-            if (response.status === 200) {
-                const data = JSON.parse(response.body);
-                reqId = data.results.request_id;
-            }
-        } catch (e) {
-        }
-        return reqId;
-    }
-
-    // static defaultCopyVersion = "3.0.6"
-
-    // static defaultCopyPlatform = "2"
-
     static defaultCopyRegion = "0"
-
     static defaultImageQuality = "1500"
+    static defaultApiUrl = "www.mangacopy.com"
+    static defaultSearchPath = "/api/kb/web/searchcl/comics"
+    static listPageSize = 50
+    static apiPageSize = 12
+    static formContentType = "application/x-www-form-urlencoded;charset=UTF-8"
 
-    static defaultApiUrl = 'www.2026copy.com'
-
-    static searchApi = "/api/kb/web/searchb/comics"
+    author_path_word_dict = Object.create(null)
+    searchPaths = new Map()
+    pendingLogout = null
 
     get webHeaders() {
         return {
@@ -48,168 +30,279 @@ class CopyManga extends ComicSource {
         }
     }
 
-    get webApiHeaders() {
-        let token = this.loadData("token") || ""
-        let cookieParts = []
-        if (token) {
-            cookieParts.push(`token=${token}`)
-        }
-        try {
-            let cookies = Network.getCookies(this.apiUrl)
-            for (let c of cookies) {
-                if (c.name !== 'token' && c.value) {
-                    cookieParts.push(`${c.name}=${c.value}`)
-                }
-            }
-        } catch (e) {}
-        return {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "platform": "2",
-            "Authorization": token ? `Token ${token}` : "",
-            "Cookie": cookieParts.join('; '),
-        }
-    }
-
     get apiUrl() {
-        let baseUrl = this.loadSetting('base_url');
-        if (!baseUrl) {
-            baseUrl = CopyManga.defaultApiUrl;
-        }
-        return `https://${baseUrl}`
-    }
-
-    get copyRegion() {
-        return this.loadSetting('region') || this.defaultCopyRegion
+        const selected = this.loadSetting("base_url");
+        const host = this.settings.base_url.options.some(option => option.value === selected)
+            ? selected
+            : CopyManga.defaultApiUrl;
+        return "https://" + host;
     }
 
     get imageQuality() {
-        return this.loadSetting('image_quality') || this.defaultImageQuality
+        return this.loadSetting("image_quality") || CopyManga.defaultImageQuality;
+    }
+
+    cookieToken(origin) {
+        return Network.getCookies(origin).find(cookie => cookie.name === "token")?.value;
+    }
+
+    sessionToken(origin) {
+        const session = this.loadData("web_session");
+        if (session) {
+            return session.origin === origin ? session.token : undefined;
+        }
+        // Older versions stored an unscoped token. Its matching cookie establishes the origin.
+        const legacyToken = this.loadData("token");
+        return legacyToken && this.cookieToken(origin) === legacyToken ? legacyToken : undefined;
+    }
+
+    saveSession(origin, token) {
+        this.saveData("web_session", {origin, token});
+        this.deleteData("token");
+    }
+
+    get webApiHeaders() {
+        const token = this.sessionToken(this.apiUrl);
+        return {
+            ...this.webHeaders,
+            "Accept": "application/json",
+            "platform": "2",
+            ...(token ? {"Authorization": "Token " + token} : {}),
+        };
+    }
+
+    formHeaders(referer) {
+        return {
+            ...this.webHeaders,
+            "Accept": "*/*",
+            "Content-Type": CopyManga.formContentType,
+            "Referer": referer,
+        };
+    }
+
+    checkWebResponse(response, operation) {
+        if (response.status === 401) {
+            throw "Login expired";
+        }
+        if (response.status !== 200) {
+            throw operation + ": HTTP " + response.status;
+        }
+        let data;
+        try {
+            data = JSON.parse(response.body);
+        } catch {
+            throw operation + ": invalid JSON response";
+        }
+        if (data?.code === 401) {
+            throw "Login expired";
+        }
+        if (data?.code !== 200) {
+            const code = Number.isInteger(data?.code) ? data.code : "unknown";
+            throw operation + ": API " + code;
+        }
+        if (!Object.prototype.hasOwnProperty.call(data, "results")) {
+            throw operation + ": missing results";
+        }
+        return data.results;
+    }
+
+    parseApiPage(response, operation, offset) {
+        const result = this.checkWebResponse(response, operation);
+        const limit = CopyManga.apiPageSize;
+        if (!Array.isArray(result?.list) || result.limit !== limit || result.offset !== offset ||
+            !Number.isInteger(result.total) || result.total < 0 || result.list.length > limit) {
+            throw operation + ": invalid pagination";
+        }
+        return {
+            comics: result.list.map(item => this.parseComicSummary(item.comic ?? item)),
+            maxPage: Math.max(1, Math.ceil(result.total / limit)),
+        };
+    }
+
+    parseComicSummary(comic) {
+        const author = comic.author?.[0];
+        if (author?.name && author.path_word) {
+            this.author_path_word_dict[author.name] = author.path_word;
+        }
+        return {
+            id: comic.path_word,
+            title: comic.name,
+            subTitle: author?.name ?? null,
+            cover: comic.cover,
+            tags: (comic.theme ?? []).map(tag => tag.name),
+            description: comic.datetime_updated,
+        };
+    }
+
+    detailUrl(origin, comicId) {
+        return origin + "/comic/" + encodeURIComponent(comicId);
+    }
+
+    comicUuid(doc) {
+        const button = doc.querySelector(".comicParticulars-botton.collect");
+        const handler = button?.attributes?.onclick ?? "";
+        return handler.match(/\bcollect\s*\(\s*['"]([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})['"]/i)?.[1];
+    }
+
+    async getSearchPath(origin, referer) {
+        const cached = this.searchPaths.get(origin);
+        if (cached || origin === "https://" + CopyManga.defaultApiUrl) {
+            return cached || CopyManga.defaultSearchPath;
+        }
+        const page = await Network.get(referer, this.webHeaders).catch(() => null);
+        const path = page?.status === 200
+            ? page.body.match(/\bconst\s+countApi\s*=\s*['"](\/api\/kb\/web\/[a-z0-9_-]+\/comics)['"]/i)?.[1]
+            : undefined;
+        if (path) {
+            this.searchPaths.set(origin, path);
+        }
+        return path || CopyManga.defaultSearchPath;
+    }
+
+    parseEmbeddedList(raw) {
+        // The page supplies single-quoted string literals inside an otherwise JSON-shaped array.
+        const json = raw.replace(/"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'/g, value => {
+            if (value[0] === '"') return value;
+            const content = value.slice(1, -1).replace(/\\(?:x[0-9a-f]{2}|[\s\S])|"/gi, character => {
+                if (character === "\\'") return "'";
+                if (character === '"') return '\\"';
+                if (/^\\x[0-9a-f]{2}$/i.test(character)) return "\\u00" + character.slice(2);
+                return character;
+            });
+            return '"' + content + '"';
+        });
+        return JSON.parse(json);
+    }
+
+    authorPageUrl(pathWord, page) {
+        const limit = CopyManga.listPageSize;
+        return this.apiUrl + "/author/" + encodeURIComponent(pathWord) +
+            "/comics?offset=" + (page - 1) * limit + "&limit=" + limit;
+    }
+
+    listPageCount(doc, total, pageUrl = this.apiUrl + "/comics") {
+        const limit = CopyManga.listPageSize;
+        if (total > 0) return Math.ceil(total / limit);
+        const totalLabels = doc.querySelectorAll(".page-all .page-total");
+        const pageCount = totalLabels[totalLabels.length - 1]?.text;
+        let maxPage = parseInt(pageCount) || 1;
+        const fullPath = pageUrl.split("?")[0];
+        const path = fullPath.slice(this.apiUrl.length);
+        for (const link of doc.querySelectorAll('a[href*="offset="][href*="limit="]')) {
+            const href = link.attributes.href;
+            if (!href.startsWith(path + "?") && !href.startsWith(fullPath + "?")) continue;
+            const offset = href.match(/[?&]offset=(\d+)(?:&|$)/)?.[1];
+            if (offset && Number.isSafeInteger(Number(offset)) &&
+                href.match(/[?&]limit=(\d+)(?:&|$)/)?.[1] === String(limit)) {
+                maxPage = Math.max(maxPage, Math.floor(Number(offset) / limit) + 1);
+            }
+        }
+        return maxPage;
+    }
+
+    decryptWebPayload(value, key) {
+        if (typeof value !== "string") throw "Invalid encrypted response";
+        value = value.trim();
+        if (value.length <= 16) throw "Invalid encrypted response";
+        const iv = Convert.encodeUtf8(value.slice(0, 16));
+        const keyBytes = Convert.encodeUtf8(key);
+        const encoded = value.slice(16);
+        let cipher;
+        if (/^(?:[0-9a-f]{2})+$/i.test(encoded)) {
+            cipher = Uint8Array.from(encoded.match(/../g), byte => parseInt(byte, 16)).buffer;
+        } else {
+            cipher = Convert.decodeBase64(encoded);
+        }
+        if (iv.byteLength !== 16 || ![16, 24, 32].includes(keyBytes.byteLength) ||
+            !cipher.byteLength || cipher.byteLength % 16 !== 0) {
+            throw "Invalid encrypted response";
+        }
+        const plaintext = new Uint8Array(Convert.decryptAesCbc(cipher, keyBytes, iv));
+        const pad = plaintext[plaintext.length - 1];
+        // The host decrypts whole blocks. Keep compatibility with payloads containing bare JSON.
+        const bytes = pad >= 1 && pad <= 16 && plaintext.slice(-pad).every(byte => byte === pad)
+            ? plaintext.slice(0, -pad)
+            : plaintext;
+        return Convert.decodeUtf8(bytes.buffer);
     }
 
     init() {
-        this.author_path_word_dict = {}
-        this.account.loginWithWebview.url = `${this.apiUrl}/web/login`
-        this.refreshSearchApi()
-        this.refreshAppApi()
+        this.account.loginWithWebview.url = this.apiUrl + "/web/login/";
     }
 
-    _encodeBase64(str) {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-        let result = ''
-        let i = 0
-        while (i < str.length) {
-            const a = str.charCodeAt(i++)
-            const b = i < str.length ? str.charCodeAt(i++) : 0
-            const c = i < str.length ? str.charCodeAt(i++) : 0
-            const bitmap = (a << 16) | (b << 8) | c
-            result += chars.charAt((bitmap >> 18) & 63)
-            result += chars.charAt((bitmap >> 12) & 63)
-            result += (i > str.length + 1) ? '=' : chars.charAt((bitmap >> 6) & 63)
-            result += (i > str.length) ? '=' : chars.charAt(bitmap & 63)
-        }
-        return result
-    }
-
-    /// account
-    /// set this to null to desable account feature
     account = {
-        login: async (account, pwd) => {
-            Network.deleteCookies(this.apiUrl)
+        login: async (account, password) => {
+            await this.pendingLogout;
+            const origin = this.apiUrl;
+            const loginPage = await Network.get(origin + "/web/login/", this.webHeaders);
+            if (loginPage.status !== 200) throw "Login page: HTTP " + loginPage.status;
 
-            let csrfToken = ""
-            try {
-                let pageRes = await Network.get(`${this.apiUrl}/web/login`, this.webHeaders)
-                if (pageRes.status === 200) {
-                    let cookies = Network.getCookies(this.apiUrl)
-                    for (let cookie of cookies) {
-                        if (cookie.name === 'csrftoken') {
-                            csrfToken = cookie.value
-                            break
-                        }
-                    }
-                }
-            } catch (e) {}
-
-            let salt = 100000 + randomInt(0, 900000)
-            let base64 = this._encodeBase64(`${pwd}-${salt}`)
-
-            const loginPaths = ['/api/kb/web/login', '/api/v1/login']
-            let lastError = null
-
-            for (let path of loginPaths) {
-                try {
-                    let headers = {
-                        "Accept": "application/json, text/plain, */*",
-                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "platform": "2",
-                        "Referer": `${this.apiUrl}/web/login`,
-                    }
-
-                    if (csrfToken) {
-                        headers["X-CSRFToken"] = csrfToken
-                    }
-
-                    let res = await Network.post(
-                        `${this.apiUrl}${path}`,
-                        headers,
-                        `username=${encodeURIComponent(account)}&password=${encodeURIComponent(base64)}&salt=${salt}&platform=2&version=2025.12.10&source=freeSite`
-                    );
-
-                    if (res.status === 200) {
-                        let data = JSON.parse(res.body)
-                        if (data.code === 200) {
-                            let token = data.results.token
-                            this.saveData('token', token)
-
-                            let domain = this.apiUrl.replace('https://', '').replace('http://', '').split('/')[0]
-                            let cookiesToSet = [new Cookie({name: 'token', value: token, domain: domain})]
-                            if (data.results.username) {
-                                cookiesToSet.push(new Cookie({name: 'name', value: data.results.username, domain: domain}))
-                            }
-                            if (data.results.user_id) {
-                                cookiesToSet.push(new Cookie({name: 'user_id', value: data.results.user_id, domain: domain}))
-                            }
-                            Network.setCookies(this.apiUrl, cookiesToSet)
-
-                            return "ok"
-                        } else {
-                            throw data.message || '登录失败'
-                        }
-                    }
-                } catch (e) {
-                    lastError = e
-                }
+            const salt = 100000 + randomInt(0, 900000);
+            const encoded = Convert.encodeBase64(Convert.encodeUtf8(password + "-" + salt));
+            const body = [
+                "username=" + encodeURIComponent(account),
+                "password=" + encodeURIComponent(encoded),
+                "salt=" + salt,
+                "platform=2",
+                "version=2025.12.10",
+                "source=freeSite",
+            ].join("&");
+            const response = await Network.post(origin + "/api/kb/web/login", {
+                ...this.webHeaders,
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Origin": origin,
+                "Referer": origin + "/web/login/loginByAccount",
+                "platform": "2",
+            }, body);
+            const result = this.checkWebResponse(response, "Login");
+            if (typeof result?.token !== "string" || !/^[\x21-\x7e]+$/.test(result.token)) {
+                throw "Login: missing session token";
             }
-
-            throw lastError || '登录失败'
+            // Use cookies set by the response. Older nodes can return the token only in JSON.
+            if (!this.cookieToken(origin)) {
+                Network.setCookies(origin, [{
+                    name: "token", value: result.token, domain: origin.slice("https://".length),
+                }]);
+            }
+            this.saveSession(origin, result.token);
+            return "ok";
         },
         loginWithWebview: {
-            url: "https://www.2026copy.com/web/login",
-            checkStatus: (url, title) => {
-                let cookies = Network.getCookies(this.apiUrl)
-                for (let cookie of cookies) {
-                    if (cookie.name === 'token' && cookie.value) {
-                        this.saveData('token', cookie.value)
-                        return true
-                    }
-                }
-                return false
-            },
-            onLoginSuccess: () => {
-                let cookies = Network.getCookies(this.apiUrl)
-                for (let cookie of cookies) {
-                    if (cookie.name === 'token' && cookie.value) {
-                        this.saveData('token', cookie.value)
-                        break
-                    }
-                }
+            url: "https://www.mangacopy.com/web/login/",
+            checkStatus: url => {
+                const origin = this.apiUrl;
+                if (this.pendingLogout || !(url === origin || url.startsWith(origin + "/"))) return false;
+                const token = this.cookieToken(origin);
+                if (!token) return false;
+                this.saveSession(origin, token);
+                return true;
             },
         },
         logout: () => {
-            this.deleteData('token')
-            Network.deleteCookies(this.apiUrl)
+            if (this.pendingLogout) return this.pendingLogout;
+            const origin = this.loadData("web_session")?.origin || this.apiUrl;
+            const allowed = this.settings.base_url.options.some(option => "https://" + option.value === origin);
+            const token = allowed ? this.sessionToken(origin) : undefined;
+            this.deleteData("web_session");
+            this.deleteData("token");
+            if (!token) {
+                Network.deleteCookies(this.apiUrl);
+                return;
+            }
+            const request = Network.post(origin + "/api/v1/logout", {
+                ...this.formHeaders(origin + "/web/person/"),
+                "Origin": origin,
+                "Authorization": "Token " + token,
+            }, "");
+            this.pendingLogout = request
+                .then(response => this.checkWebResponse(response, "Logout"))
+                .catch(() => {})
+                .finally(() => {
+                    Network.deleteCookies(origin);
+                    this.pendingLogout = null;
+                });
+            return this.pendingLogout;
         },
         registerWebsite: null
     }
@@ -457,7 +550,7 @@ class CopyManga extends ComicSource {
 
     categoryComics = {
         load: async (category, param, options, page) => {
-            if (category.startsWith("author:")) {
+            if (category?.startsWith("author:")) {
                 let authorName = category.substring("author:".length);
                 let pathWord = this.author_path_word_dict[authorName] || null;
 
@@ -496,8 +589,7 @@ class CopyManga extends ComicSource {
                     throw `无法找到作者: ${authorName}`;
                 }
 
-                this.author_path_word_dict[authorName] = pathWord;
-                let authorUrl = `${this.apiUrl}/author/${encodeURIComponent(pathWord)}/comics?page=${page}`;
+                let authorUrl = this.authorPageUrl(pathWord, page);
                 let res = await Network.get(authorUrl, this.webHeaders);
                 if (res.status !== 200) {
                     throw `Invalid status code: ${res.status}`;
@@ -511,12 +603,7 @@ class CopyManga extends ComicSource {
                 if (listBox && listBox.attributes && listBox.attributes['list']) {
                     try {
                         let rawList = listBox.attributes['list'];
-                        let decoded;
-                        try {
-                            decoded = JSON.parse(rawList);
-                        } catch (jsonErr) {
-                            decoded = new Function('return ' + rawList)();
-                        }
+                        const decoded = this.parseEmbeddedList(rawList);
                         if (Array.isArray(decoded)) {
                             for (let item of decoded) {
                                 let pw = item.path_word || '';
@@ -595,23 +682,8 @@ class CopyManga extends ComicSource {
                     }
                 }
 
-                let maxPage = 1;
-                let totalFromList = 0;
-                if (listBox && listBox.attributes && listBox.attributes['total']) {
-                    totalFromList = parseInt(listBox.attributes['total']) || 0;
-                }
-                if (totalFromList > 0) {
-                    maxPage = Math.ceil(totalFromList / 30);
-                } else {
-                    let pager = doc.querySelector('.page-all');
-                    if (pager) {
-                        let totalLabels = pager.querySelectorAll('.page-total');
-                        if (totalLabels.length > 0) {
-                            let lastLabel = totalLabels[totalLabels.length - 1];
-                            maxPage = parseInt(lastLabel.text ? lastLabel.text.trim() : '1') || 1;
-                        }
-                    }
-                }
+                const total = parseInt(listBox?.attributes?.total) || 0;
+                const maxPage = this.listPageCount(doc, total, authorUrl);
 
                 return {
                     comics: comics,
@@ -643,7 +715,7 @@ class CopyManga extends ComicSource {
                         baseUrl += `&region=${value}`;
                     }
                 }
-                baseUrl += `&ordering=${orderingParam}&limit=30&offset=${(page - 1) * 30}`;
+                baseUrl += `&ordering=${orderingParam}&limit=${CopyManga.listPageSize}&offset=${(page - 1) * CopyManga.listPageSize}`;
                 category_url = baseUrl;
             }
 
@@ -717,12 +789,7 @@ class CopyManga extends ComicSource {
                     if (listBox.attributes['list']) {
                         try {
                             let rawList = listBox.attributes['list'];
-                            let decoded;
-                            try {
-                                decoded = JSON.parse(rawList);
-                            } catch (jsonErr) {
-                                decoded = new Function('return ' + rawList)();
-                            }
+                            const decoded = this.parseEmbeddedList(rawList);
                             if (Array.isArray(decoded)) {
                                 for (let item of decoded) {
                                     let pathWord = item.path_word || '';
@@ -803,21 +870,7 @@ class CopyManga extends ComicSource {
                 }
             }
 
-            let maxPage = 1;
-            if (totalFromList > 0) {
-                maxPage = Math.ceil(totalFromList / 30);
-            } else {
-                let pager = doc.querySelector('.page-all');
-                if (pager) {
-                    let totalLabels = pager.querySelectorAll('.page-total');
-                    if (totalLabels.length > 0) {
-                        let lastLabel = totalLabels[totalLabels.length - 1];
-                        let total = parseInt(lastLabel.text ? lastLabel.text.trim() : '1') || 1;
-                        maxPage = total;
-                    }
-                }
-            }
-
+            let maxPage = this.listPageCount(doc, totalFromList);
             return {
                 comics: comics,
                 maxPage: maxPage
@@ -887,7 +940,7 @@ class CopyManga extends ComicSource {
                         baseUrl += `&region=${value}`;
                     }
                 }
-                baseUrl += `&ordering=${orderingParam}&limit=30&offset=${(page - 1) * 30}`;
+                baseUrl += `&ordering=${orderingParam}&limit=${CopyManga.listPageSize}&offset=${(page - 1) * CopyManga.listPageSize}`;
 
                 let res = await Network.get(baseUrl, this.webHeaders);
                 if (res.status !== 200) {
@@ -907,12 +960,7 @@ class CopyManga extends ComicSource {
                     if (listBox.attributes['list']) {
                         try {
                             let rawList = listBox.attributes['list'];
-                            let decoded;
-                            try {
-                                decoded = JSON.parse(rawList);
-                            } catch (jsonErr) {
-                                decoded = new Function('return ' + rawList)();
-                            }
+                            const decoded = this.parseEmbeddedList(rawList);
                             if (Array.isArray(decoded)) {
                                 for (let item of decoded) {
                                     let pw = item.path_word || '';
@@ -989,20 +1037,7 @@ class CopyManga extends ComicSource {
                     }
                 }
 
-                let maxPage = 1;
-                if (totalFromList > 0) {
-                    maxPage = Math.ceil(totalFromList / 30);
-                } else {
-                    let pager = doc.querySelector('.page-all');
-                    if (pager) {
-                        let totalLabels = pager.querySelectorAll('.page-total');
-                        if (totalLabels.length > 0) {
-                            let lastLabel = totalLabels[totalLabels.length - 1];
-                            maxPage = parseInt(lastLabel.text ? lastLabel.text.trim() : '1') || 1;
-                        }
-                    }
-                }
-
+                let maxPage = this.listPageCount(doc, totalFromList);
                 return {
                     comics: comics,
                     maxPage: maxPage
@@ -1059,7 +1094,7 @@ class CopyManga extends ComicSource {
                             baseUrl += `&region=${value}`;
                         }
                     }
-                    baseUrl += `&ordering=${orderingParam}&limit=30&offset=${(page - 1) * 30}`;
+                    baseUrl += `&ordering=${orderingParam}&limit=${CopyManga.listPageSize}&offset=${(page - 1) * CopyManga.listPageSize}`;
 
                     let res = await Network.get(baseUrl, this.webHeaders);
                     if (res.status !== 200) {
@@ -1079,12 +1114,7 @@ class CopyManga extends ComicSource {
                         if (listBox.attributes['list']) {
                             try {
                                 let rawList = listBox.attributes['list'];
-                                let decoded;
-                                try {
-                                    decoded = JSON.parse(rawList);
-                                } catch (jsonErr) {
-                                    decoded = new Function('return ' + rawList)();
-                                }
+                                const decoded = this.parseEmbeddedList(rawList);
                                 if (Array.isArray(decoded)) {
                                     for (let item of decoded) {
                                         let pw = item.path_word || '';
@@ -1161,20 +1191,7 @@ class CopyManga extends ComicSource {
                         }
                     }
 
-                    let maxPage = 1;
-                    if (totalFromList > 0) {
-                        maxPage = Math.ceil(totalFromList / 30);
-                    } else {
-                        let pager = doc.querySelector('.page-all');
-                        if (pager) {
-                            let totalLabels = pager.querySelectorAll('.page-total');
-                            if (totalLabels.length > 0) {
-                                let lastLabel = totalLabels[totalLabels.length - 1];
-                                maxPage = parseInt(lastLabel.text ? lastLabel.text.trim() : '1') || 1;
-                            }
-                        }
-                    }
-
+                    let maxPage = this.listPageCount(doc, totalFromList);
                     return {
                         comics: comics,
                         maxPage: maxPage
@@ -1182,47 +1199,10 @@ class CopyManga extends ComicSource {
                 }
             }
 
-            let authorName = keyword;
-            if (keyword.startsWith("作者:")) {
-                authorName = keyword.substring("作者:".length).trim();
-            }
-
-            let pathWord = this.author_path_word_dict[authorName] || null;
-
-            if (!pathWord) {
-                try {
-                    let searchHtmlRes = await Network.get(
-                        `${this.apiUrl}/search?q=${encodeURIComponent(authorName)}`,
-                        this.webHeaders
-                    );
-                    if (searchHtmlRes.status === 200) {
-                        let searchDoc = new HtmlDocument(searchHtmlRes.body);
-                        let authorLinks = searchDoc.querySelectorAll('a[href*="/author/"]');
-                        for (let i = 0; i < authorLinks.length; i++) {
-                            let link = authorLinks[i];
-                            let href = link.attributes['href'] || '';
-                            let match = href.match(/\/author\/([^\/]+)/);
-                            if (match && match[1]) {
-                                let name = link.text ? link.text.trim() : '';
-                                if (name) {
-                                    this.author_path_word_dict[name] = match[1];
-                                }
-                                if (!pathWord && name === authorName) {
-                                    pathWord = match[1];
-                                }
-                                if (!pathWord) {
-                                    pathWord = match[1];
-                                }
-                            }
-                        }
-                    }
-                } catch (e) {
-                }
-            }
-
+            const explicitAuthor = /^(?:author|\u4f5c\u8005):(.+)$/i.exec(keyword)?.[1].trim();
+            const pathWord = explicitAuthor ? this.author_path_word_dict[explicitAuthor] : undefined;
             if (pathWord) {
-                this.author_path_word_dict[authorName] = pathWord;
-                let authorUrl = `${this.apiUrl}/author/${encodeURIComponent(pathWord)}/comics?page=${page}`;
+                let authorUrl = this.authorPageUrl(pathWord, page);
                 let res = await Network.get(authorUrl, this.webHeaders);
                 if (res.status !== 200) {
                     throw `Invalid status code: ${res.status}`;
@@ -1235,12 +1215,7 @@ class CopyManga extends ComicSource {
                 if (listBox && listBox.attributes && listBox.attributes['list']) {
                     try {
                         let rawList = listBox.attributes['list'];
-                        let decoded;
-                        try {
-                            decoded = JSON.parse(rawList);
-                        } catch (jsonErr) {
-                            decoded = new Function('return ' + rawList)();
-                        }
+                        const decoded = this.parseEmbeddedList(rawList);
                         if (Array.isArray(decoded)) {
                             for (let item of decoded) {
                                 let pw = item.path_word || '';
@@ -1316,23 +1291,8 @@ class CopyManga extends ComicSource {
                     }
                 }
 
-                let maxPage = 1;
-                let totalFromList = 0;
-                if (listBox && listBox.attributes && listBox.attributes['total']) {
-                    totalFromList = parseInt(listBox.attributes['total']) || 0;
-                }
-                if (totalFromList > 0) {
-                    maxPage = Math.ceil(totalFromList / 30);
-                } else {
-                    let pager = doc.querySelector('.page-all');
-                    if (pager) {
-                        let totalLabels = pager.querySelectorAll('.page-total');
-                        if (totalLabels.length > 0) {
-                            let lastLabel = totalLabels[totalLabels.length - 1];
-                            maxPage = parseInt(lastLabel.text ? lastLabel.text.trim() : '1') || 1;
-                        }
-                    }
-                }
+                const total = parseInt(listBox?.attributes?.total) || 0;
+                const maxPage = this.listPageCount(doc, total, authorUrl);
 
                 return {
                     comics: comics,
@@ -1340,55 +1300,18 @@ class CopyManga extends ComicSource {
                 };
             }
 
-            let q_type = "";
-            if (options && options[0]) {
-                q_type = options[0];
-            }
-            keyword = encodeURIComponent(keyword)
-            let search_url = this.loadSetting('search_api') === "webAPI"
-                ? `${this.apiUrl}${CopyManga.searchApi}`
-                : `${this.apiUrl}/api/v3/search/comic`
-            let res = await Network.get(
-                `${search_url}?limit=30&offset=${(page - 1) * 30}&q=${keyword}&q_type=${q_type}`,
-                this.webApiHeaders
-            )
-            if (res.status !== 200) {
-                throw `Invalid status code: ${res.status}`
-            }
-
-            let data = JSON.parse(res.body)
-
-            function parseComic(comic) {
-                if (comic["comic"] !== null && comic["comic"] !== undefined) {
-                    comic = comic["comic"]
-                }
-                let tags = []
-                if (comic["theme"] !== null && comic["theme"] !== undefined) {
-                    tags = comic["theme"].map(t => t["name"])
-                }
-                let author = null
-
-                if (Array.isArray(comic["author"]) && comic["author"].length > 0) {
-                    author = comic["author"][0]["name"]
-                    if (author && comic["author"][0]["path_word"]) {
-                        this.author_path_word_dict[author] = comic["author"][0]["path_word"]
-                    }
-                }
-
-                return {
-                    id: comic["path_word"],
-                    title: comic["name"],
-                    subTitle: author,
-                    cover: comic["cover"],
-                    tags: tags,
-                    description: comic["datetime_updated"]
-                }
-            }
-
-            return {
-                comics: data["results"]["list"].map(parseComic.bind(this)),
-                maxPage: (data["results"]["total"] - (data["results"]["total"] % 21)) / 21 + 1
-            }
+            const origin = this.apiUrl;
+            const type = explicitAuthor ? "author" : options?.[0] || "";
+            const query = "q=" + encodeURIComponent(explicitAuthor || keyword) + "&q_type=" + encodeURIComponent(type);
+            const referer = origin + "/search?" + query;
+            const path = await this.getSearchPath(origin, referer);
+            const limit = CopyManga.apiPageSize;
+            const offset = (page - 1) * limit;
+            const response = await Network.get(
+                origin + path + "?offset=" + offset + "&platform=2&limit=" + limit + "&" + query,
+                this.formHeaders(referer),
+            );
+            return this.parseApiPage(response, "Search", offset);
         },
         optionList: [
             {
@@ -1407,86 +1330,43 @@ class CopyManga extends ComicSource {
     favorites = {
         multiFolder: false,
         addOrDelFavorite: async (comicId, folderId, isAdding) => {
-            let is_collect = isAdding ? 1 : 0
-            let token = this.loadData("token");
-            let comicData = await Network.get(
-                `${this.apiUrl}/api/v3/comic2/${comicId}?in_mainland=true&platform=2`,
-                this.webApiHeaders
-            )
-            if (comicData.status !== 200) {
-                throw `Invalid status code: ${comicData.status}`
-            }
-            let comic_id = JSON.parse(comicData.body).results.comic.uuid
-            let res = await Network.post(
-                `${this.apiUrl}/api/v3/member/collect/comic`,
-                {
-                    ...this.webApiHeaders,
-                    "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
-                },
-                `comic_id=${comic_id}&is_collect=${is_collect}`
-            )
-            if (res.status === 401) {
-                throw `Login expired`;
-            }
-            if (res.status !== 200) {
-                throw `Invalid status code: ${res.status}`
-            }
-            return "ok"
+            const origin = this.apiUrl;
+            const token = this.sessionToken(origin);
+            if (!token) throw "Login expired";
+            const referer = this.detailUrl(origin, comicId);
+            const page = await Network.get(referer, this.webHeaders);
+            if (page.status !== 200) throw "Comic detail: HTTP " + page.status;
+            const uuid = this.comicUuid(new HtmlDocument(page.body));
+            if (!uuid) throw "Comic detail: missing comic UUID";
+            const response = await Network.post(origin + "/api/v2/web/collect", {
+                ...this.formHeaders(referer),
+                "Origin": origin,
+                "Authorization": "Token " + token,
+            }, "comic_id=" + encodeURIComponent(uuid) + "&is_collect=" + (isAdding ? 1 : 0));
+            this.checkWebResponse(response, "Favorites");
+            return "ok";
         },
         loadComics: async (page, folder) => {
-            let ordering = this.loadSetting('favorites_ordering') || '-datetime_updated';
-            var res = await Network.get(
-                `${this.apiUrl}/api/v3/member/collect/comics?limit=30&offset=${(page - 1) * 30}&free_type=1&ordering=${ordering}`,
-                this.webApiHeaders
-            )
-
-            if (res.status === 401) {
-                throw `Login expired`
-            }
-
-            if (res.status !== 200) {
-                throw `Invalid status code: ${res.status}`
-            }
-
-            let data = JSON.parse(res.body)
-
-            function parseComic(comic) {
-                if (comic["comic"] !== null && comic["comic"] !== undefined) {
-                    comic = comic["comic"]
-                }
-                let tags = []
-                if (comic["theme"] !== null && comic["theme"] !== undefined) {
-                    tags = comic["theme"].map(t => t["name"])
-                }
-                let author = null
-
-                if (Array.isArray(comic["author"]) && comic["author"].length > 0) {
-                    author = comic["author"][0]["name"]
-                    if (author && comic["author"][0]["path_word"]) {
-                        this.author_path_word_dict[author] = comic["author"][0]["path_word"]
-                    }
-                }
-
-                return {
-                    id: comic["path_word"],
-                    title: comic["name"],
-                    subTitle: author,
-                    cover: comic["cover"],
-                    tags: tags,
-                    description: comic["datetime_updated"]
-                }
-            }
-
-            return {
-                comics: data["results"]["list"].map(parseComic.bind(this)),
-                maxPage: (data["results"]["total"] - (data["results"]["total"] % 21)) / 21 + 1
-            }
+            const origin = this.apiUrl;
+            const headers = this.webApiHeaders;
+            if (!headers.Authorization) throw "Login expired";
+            const ordering = this.loadSetting("favorites_ordering") || "-datetime_updated";
+            const limit = CopyManga.apiPageSize;
+            const offset = (page - 1) * limit;
+            const response = await Network.get(
+                origin + "/api/v3/member/collect/comics?limit=" + limit + "&offset=" + offset +
+                    "&free_type=1&ordering=" + encodeURIComponent(ordering),
+                {...headers, "Referer": origin + "/web/person/shujia"},
+            );
+            return this.parseApiPage(response, "Favorites", offset);
         }
     }
 
     comic = {
         loadInfo: async (id) => {
-            let res = await Network.get(`${this.apiUrl}/comic/${id}`, this.webHeaders);
+            const origin = this.apiUrl;
+            const detailUrl = this.detailUrl(origin, id);
+            let res = await Network.get(detailUrl, this.webHeaders);
             if (res.status !== 200) {
                 throw `Invalid status code: ${res.status}`;
             }
@@ -1558,8 +1438,7 @@ class CopyManga extends ComicSource {
                 }
             }
 
-            let chapters = {};
-            let hasGroups = false;
+            let chapters = Object.create(null);
 
             let ccz = '';
             let cczPatterns = [
@@ -1580,76 +1459,27 @@ class CopyManga extends ComicSource {
 
             if (ccz && dnt) {
                 try {
-                    let chapterUrl = `${this.apiUrl}/comicdetail/${id}/chapters`;
-
-                    let chapterRes = await Network.get(
-                        chapterUrl,
-                        {
-                            ...this.webHeaders,
-                            'Accept': 'application/json, text/plain, */*',
-                            'Referer': `${this.apiUrl}/comic/${id}`,
-                            'dnts': dnt
-                        }
+                    const response = await Network.get(
+                        origin + "/comicdetail/" + encodeURIComponent(id) + "/chapters",
+                        {...this.formHeaders(detailUrl), "dnts": dnt},
                     );
-
-                    if (chapterRes.status === 200) {
-                        let chapterData = JSON.parse(chapterRes.body);
-
-                        if (chapterData.code === 200 && chapterData.results) {
-                            let encrypted = chapterData.results.trim();
-
-                            if (encrypted.length > 16) {
-                                let ivStr = encrypted.substring(0, 16);
-                                let cipherStr = encrypted.substring(16);
-
-                                let keyBytes = Convert.encodeUtf8(ccz);
-                                let ivBytes = Convert.encodeUtf8(ivStr);
-
-                                let cipherBytes;
-                                if (/^[0-9a-fA-F]+$/.test(cipherStr) && cipherStr.length % 2 === 0) {
-                                    let hexBytes = new Uint8Array(cipherStr.length / 2);
-                                    for (let i = 0; i < cipherStr.length; i += 2) {
-                                        hexBytes[i / 2] = parseInt(cipherStr.substring(i, i + 2), 16);
-                                    }
-                                    cipherBytes = hexBytes.buffer;
-                                } else {
-                                    cipherBytes = Convert.decodeBase64(cipherStr);
-                                }
-
-                                let plainBytes = Convert.decryptAesCbc(cipherBytes, keyBytes, ivBytes);
-                                let plainText = Convert.decodeUtf8(plainBytes);
-                                let parsed = JSON.parse(plainText);
-
-                                let groups = parsed.groups;
-                                if (groups) {
-                                    let groupKeys = Object.keys(groups);
-                                    for (let gKey of groupKeys) {
-                                        let group = groups[gKey];
-                                        let groupName = group.name || gKey;
-                                        if (group.chapters && group.chapters.length > 0) {
-                                            hasGroups = true;
-                                            let groupChapters = {};
-                                            for (let chapter of group.chapters) {
-                                                let chapterId = chapter.id || chapter.uuid;
-                                                let chapterTitle = chapter.name || '';
-                                                if (chapterId && chapterTitle) {
-                                                    groupChapters[chapterId] = chapterTitle;
-                                                }
-                                            }
-                                            chapters[groupName] = groupChapters;
-                                        }
-                                    }
-                                }
-                            }
+                    const payload = this.checkWebResponse(response, "Chapters");
+                    const parsed = JSON.parse(this.decryptWebPayload(payload, ccz));
+                    for (const [key, group] of Object.entries(parsed.groups ?? {})) {
+                        if (!Array.isArray(group?.chapters)) continue;
+                        const entries = group.chapters.filter(chapter => (chapter?.id || chapter?.uuid) && chapter.name);
+                        if (entries.length) {
+                            chapters[group.name || key] = Object.fromEntries(entries.map(chapter => [
+                                chapter.id || chapter.uuid, chapter.name,
+                            ]));
                         }
                     }
-                } catch (e) {
-                    console.log('Chapter decryption failed: ' + e);
+                } catch {
+                    console.log("Could not load the web chapter directory.");
                 }
             }
 
-            if (!hasGroups) {
-                chapters = {};
+            if (Object.keys(chapters).length === 0) {
                 let chapterLinks = doc.querySelectorAll('a[href*="/chapter/"]');
 
                 let seenChapters = new Set();
@@ -1675,15 +1505,8 @@ class CopyManga extends ComicSource {
                 }
             }
 
-            let comicId = '';
-            let collectBtn = doc.querySelector('.comicParticulars-botton.collect');
-            if (collectBtn && collectBtn.attributes) {
-                let onclick = collectBtn.attributes['onclick'] || '';
-                let match = onclick.match(/collect\s*\(\s*['"]([^'"]+)['"]/);
-                if (match) {
-                    comicId = match[1];
-                }
-            }
+            const comicId = this.comicUuid(doc) || '';
+            const collectBtn = doc.querySelector('.comicParticulars-botton.collect');
 
             let isFavorite = false;
             if (collectBtn) {
@@ -1707,9 +1530,10 @@ class CopyManga extends ComicSource {
             }
         },
         loadEp: async (comicId, epId) => {
+            const detailUrl = this.detailUrl(this.apiUrl, comicId);
             let res = await Network.get(
-                `${this.apiUrl}/comic/${comicId}/chapter/${epId}`,
-                this.webHeaders
+                detailUrl + "/chapter/" + encodeURIComponent(epId),
+                {...this.webHeaders, "Referer": detailUrl},
             );
 
             if (res.status !== 200) {
@@ -1749,76 +1573,24 @@ class CopyManga extends ComicSource {
                 }
             }
 
-            if (contentKey && cct && contentKey.length > 16) {
+            if (contentKey && cct) {
                 try {
-                    console.log('Decrypting with contentKey length: ' + contentKey.length + ', cct: ' + cct.substring(0, 10) + '...');
-                    let ivStr = contentKey.substring(0, 16);
-                    let cipherStr = contentKey.substring(16);
-
-                    let keyBytes = Convert.encodeUtf8(cct);
-                    let ivBytes = Convert.encodeUtf8(ivStr);
-
-                    let cipherBytes;
-                    if (/^[0-9a-fA-F]+$/.test(cipherStr) && cipherStr.length % 2 === 0) {
-                        console.log('Using hex decoding for cipher');
-                        let hexBytes = new Uint8Array(cipherStr.length / 2);
-                        for (let i = 0; i < cipherStr.length; i += 2) {
-                            hexBytes[i / 2] = parseInt(cipherStr.substring(i, i + 2), 16);
-                        }
-                        cipherBytes = hexBytes.buffer;
-                    } else {
-                        console.log('Using base64 decoding for cipher');
-                        cipherBytes = Convert.decodeBase64(cipherStr);
-                    }
-
-                    let plainBytes = Convert.decryptAesCbc(cipherBytes, keyBytes, ivBytes);
-                    let plainText = Convert.decodeUtf8(plainBytes);
-                    console.log('Decrypted text preview: ' + plainText.substring(0, 100));
-
-                    // Remove PKCS7 padding
-                    let paddingLength = plainBytes[plainBytes.length - 1];
-                    if (paddingLength > 0 && paddingLength <= 16) {
-                        let validPadding = true;
-                        for (let i = 0; i < paddingLength; i++) {
-                            if (plainBytes[plainBytes.length - 1 - i] !== paddingLength) {
-                                validPadding = false;
-                                break;
-                            }
-                        }
-                        if (validPadding) {
-                            plainBytes = plainBytes.slice(0, plainBytes.length - paddingLength);
-                            plainText = Convert.decodeUtf8(plainBytes);
-                        }
-                    }
-
-                    // Try to find valid JSON in the decrypted text
-                    let jsonMatch = plainText.match(/\[.*\]/s);
-                    if (jsonMatch) {
-                        plainText = jsonMatch[0];
-                    }
-
-                    console.log('Processed text preview: ' + plainText.substring(0, 100));
-                    let parsed = JSON.parse(plainText);
-
+                    const json = this.decryptWebPayload(contentKey, cct);
+                    const parsed = JSON.parse(json.match(/\[.*\]/s)?.[0] ?? json);
                     if (Array.isArray(parsed)) {
-                        for (let item of parsed) {
-                            let url = '';
-                            if (typeof item === 'string') {
-                                url = item;
-                            } else if (item && item.url) {
-                                url = item.url;
-                            }
-                            if (url) {
-                                if (url.startsWith('//')) {
-                                    url = 'https:' + url;
+                        for (const item of parsed) {
+                            let url = typeof item === 'string' ? item : item?.url;
+                            if (typeof url === "string" && url) {
+                                if (url.startsWith("//")) {
+                                    url = "https:" + url;
                                 }
                                 url = url.replace(/([./])c\d+x\.[a-zA-Z]+$/, `$1c${this.imageQuality}x.webp`);
                                 images.push(url);
                             }
                         }
                     }
-                } catch (e) {
-                    console.log('Image decryption failed: ' + e);
+                } catch {
+                    console.log("Could not load the web reader image list.");
                 }
             }
 
@@ -1835,7 +1607,6 @@ class CopyManga extends ComicSource {
                 ];
                 for (let selector of selectors) {
                     let imgEls = doc.querySelectorAll(selector);
-                    console.log(`Selector "${selector}" found ${imgEls.length} images`);
                     for (let i = 0; i < imgEls.length; i++) {
                         let img = imgEls[i];
                         let src = '';
@@ -1901,7 +1672,7 @@ class CopyManga extends ComicSource {
             }
         },
         sendComment: async (comicId, subId, content, replyTo) => {
-            let token = this.loadData("token");
+            const token = this.sessionToken(this.apiUrl);
             if (!token) {
                 throw "未登录"
             }
@@ -1963,7 +1734,7 @@ class CopyManga extends ComicSource {
             }
         },
         sendChapterComment: async (comicId, epId, content, replyTo) => {
-            let token = this.loadData("token");
+            const token = this.sessionToken(this.apiUrl);
             if (!token) {
                 throw "未登录"
             }
@@ -2062,21 +1833,6 @@ class CopyManga extends ComicSource {
             ],
             default: CopyManga.defaultImageQuality,
         },
-        search_api: {
-            title: "搜索方式",
-            type: "select",
-            options: [
-                {
-                    value: 'baseAPI',
-                    text: '基础API'
-                },
-                {
-                    value: 'webAPI',
-                    text: '网页端API'
-                }
-            ],
-            default: 'baseAPI'
-        },
         base_url: {
             title: "节点选择",
             type: "select",
@@ -2134,28 +1890,6 @@ class CopyManga extends ComicSource {
             }
         }
         return true
-    }
-
-    async refreshSearchApi() {
-        let url = "https://www.copy20.com/search"
-        let res = await fetch(url)
-        let searchApi = ""
-        if (res.status === 200) {
-            let text = await res.text()
-            let match = text.match(/const countApi = "([^"]+)"/)
-            if (match && match[1]) {
-                CopyManga.searchApi = match[1]
-            }
-        }
-    }
-
-    async refreshAppApi() {
-        const url = "https://api.copy-manga.com/api/v3/system/network2?platform=2"
-        const res = await fetch(url, { headers: this.webApiHeaders });
-        if (res.status === 200) {
-            let data = await res.json();
-            this.settings.base_url = data.results.api[0][0];
-        }
     }
 
     async runSpeedTest() {
