@@ -199,6 +199,95 @@ test("category and author routes paginate with offsets and parse quoted strings 
     assert.throws(() => source.parseEmbeddedList("[{'name': untrusted()}]"), /JSON/);
 });
 
+test("detail separates authors from themes and uses shelf observations instead of default button text", async () => {
+    const link = (href, text) => ({attributes: {href}, text});
+    const author = link("/author/cq/comics", "Author");
+    const genre = link("/comics?theme=sige", "# Four-panel");
+    const start = link("/comic/work/chapter/first", "\u958b\u59cb\u95b1\u8b80");
+    const shelfButton = {
+        attributes: {onclick: "collect('" + comicUuid + "')"},
+        text: "\u52a0\u5165\u66f8\u67b6",
+    };
+    const detail = {
+        ".comicParticulars-title-right": [{querySelectorAll: () => [author, genre, start, shelfButton]}],
+        '.comicParticulars-title-right a[href*="/author/"]': [author, author],
+        ".comicParticulars-tag a": [genre, link("/comics?ordering=popular", "Sort")],
+        '.comicParticulars-tag a[href*="/comics?"]': [genre, link("/comics?ordering=popular", "Sort")],
+        ".comicParticulars-botton.collect": [shelfButton],
+    };
+    const state = new Map([["web_session", {origin, token: "fixture-token"}]]);
+    const {source} = harness(call => {
+        if (call.url.pathname.endsWith("/collect/comics")) {
+            return api({list: [{comic: {path_word: "work", name: "Work"}}], total: 1, limit: 12, offset: 0});
+        }
+        if (call.method === "POST") return api(null);
+        return html(call.url.pathname.endsWith("/marked") ? "marked-detail" : "detail");
+    }, {state, documents: {
+        detail,
+        "marked-detail": {...detail, ".comicParticulars-botton.collect": [{...shelfButton, text: "\u5df2\u6536\u85cf"}]},
+    }});
+
+    const favorites = await source.favorites.loadComics(1, null);
+    const work = await source.comic.loadInfo(favorites.comics[0].id);
+    assert.equal(work.isFavorite, true);
+    assert.deepEqual(plain(work.tags["\u4f5c\u8005"]), ["Author"]);
+    assert.deepEqual(plain(work.tags["\u6807\u7b7e"]), ["Four-panel"]);
+    assert.equal(source.author_path_word_dict.Author, "cq");
+    assert.equal((await source.comic.loadInfo("unseen")).isFavorite, null);
+    assert.equal((await source.comic.loadInfo("marked")).isFavorite, true);
+
+    await source.favorites.addOrDelFavorite("work", null, false);
+    await source.favorites.loadComics(1, null);
+    assert.equal((await source.comic.loadInfo("work")).isFavorite, false);
+    await source.favorites.addOrDelFavorite("work", null, true);
+    assert.equal((await source.comic.loadInfo("work")).isFavorite, true);
+
+    state.set("web_session", {origin, token: "another-fixture-session"});
+    assert.equal((await source.comic.loadInfo("work")).isFavorite, null);
+});
+
+test("full favorite refresh reads exact totals with the configured sort and stops on pagination drift", async () => {
+    const state = new Map([["web_session", {origin, token: "fixture-token"}]]);
+    const {source, calls} = harness(call => {
+        const offset = Number(call.url.searchParams.get("offset"));
+        const total = 13;
+        const length = Math.min(12, total - offset);
+        const list = Array.from({length}, (_, index) => {
+            const id = "work-" + (offset + index);
+            return {comic: {path_word: id, name: id}};
+        });
+        return api({list, offset, total, limit: 12});
+    }, {state, settings: {favorites_ordering: "-datetime_modifier"}});
+
+    const first = await source.favorites.loadCachePage(1, "", null);
+    const last = await source.favorites.loadCachePage(2, "", first.total);
+    assert.equal(first.total, 13);
+    assert.equal(first.maxPage, 2);
+    assert.equal(first.comics.length, 12);
+    assert.equal(last.total, 13);
+    assert.equal(last.maxPage, 2);
+    assert.deepEqual(plain(last.comics.map(comic => comic.id)), ["work-12"]);
+    assert.deepEqual(calls.map(call => call.url.searchParams.get("offset")), ["0", "12"]);
+    assert.deepEqual(calls.map(call => call.url.searchParams.get("ordering")), [
+        "-datetime_modifier", "-datetime_modifier",
+    ]);
+    assert.deepEqual(plain(source.favorites.cacheSettings), ["favorites_ordering", "base_url"]);
+    assert.equal(source.favorites.cacheAccountSetting, "base_url");
+    await assert.rejects(() => source.favorites.loadCachePage(2, "", 14), /inconsistent cache page/);
+});
+
+test("full favorite refresh distinguishes an empty shelf from a truncated response", async () => {
+    const state = new Map([["web_session", {origin, token: "fixture-token"}]]);
+    let total = 0;
+    const {source} = harness(() => api({list: [], offset: 0, limit: 12, total}), {state});
+    assert.deepEqual(plain(await source.favorites.loadCachePage(1, "", null)), {
+        comics: [], total: 0, maxPage: 0,
+    });
+    assert.equal((await source.favorites.loadComics(1, "")).maxPage, 1);
+    total = 1;
+    await assert.rejects(() => source.favorites.loadCachePage(1, "", null), /inconsistent cache page/);
+});
+
 function encrypted(value, format) {
     const iv = "0123456789abcdef";
     const cipher = createCipheriv("aes-128-cbc", Buffer.from("abcdefghijklmnop"), Buffer.from(iv));

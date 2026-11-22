@@ -4,7 +4,7 @@ class CopyManga extends ComicSource {
 
     key = "copy_manga"
 
-    version = "1.4.3"
+    version = "1.4.4"
 
     minAppVersion = "1.6.0"
 
@@ -21,6 +21,7 @@ class CopyManga extends ComicSource {
     author_path_word_dict = Object.create(null)
     searchPaths = new Map()
     pendingLogout = null
+    favoriteEvidence = null
 
     get webHeaders() {
         return {
@@ -57,12 +58,23 @@ class CopyManga extends ComicSource {
     }
 
     saveSession(origin, token) {
+        this.favoriteEvidence = null;
         this.saveData("web_session", {origin, token});
         this.deleteData("token");
     }
 
-    get webApiHeaders() {
-        const token = this.sessionToken(this.apiUrl);
+    favoriteObservations(origin, token) {
+        if (!token || this.apiUrl !== origin || this.sessionToken(origin) !== token) return null;
+        const now = Date.now();
+        const evidence = this.favoriteEvidence;
+        if (!evidence || evidence.origin !== origin || evidence.token !== token || evidence.expiresAt <= now) {
+            // The host can show a remote page before it publishes the full collection.
+            this.favoriteEvidence = {origin, token, expiresAt: now + 120000, items: new Map()};
+        }
+        return this.favoriteEvidence.items;
+    }
+
+    webApiHeaders(token) {
         return {
             ...this.webHeaders,
             "Accept": "application/json",
@@ -110,12 +122,13 @@ class CopyManga extends ComicSource {
         const result = this.checkWebResponse(response, operation);
         const limit = CopyManga.apiPageSize;
         if (!Array.isArray(result?.list) || result.limit !== limit || result.offset !== offset ||
-            !Number.isInteger(result.total) || result.total < 0 || result.list.length > limit) {
+            !Number.isSafeInteger(result.total) || result.total < 0 || result.list.length > limit) {
             throw operation + ": invalid pagination";
         }
         return {
             comics: result.list.map(item => this.parseComicSummary(item.comic ?? item)),
             maxPage: Math.max(1, Math.ceil(result.total / limit)),
+            total: result.total,
         };
     }
 
@@ -281,6 +294,7 @@ class CopyManga extends ComicSource {
         },
         logout: () => {
             if (this.pendingLogout) return this.pendingLogout;
+            this.favoriteEvidence = null;
             const origin = this.loadData("web_session")?.origin || this.apiUrl;
             const allowed = this.settings.base_url.options.some(option => "https://" + option.value === origin);
             const token = allowed ? this.sessionToken(origin) : undefined;
@@ -1329,6 +1343,8 @@ class CopyManga extends ComicSource {
 
     favorites = {
         multiFolder: false,
+        cacheSettings: ["favorites_ordering", "base_url"],
+        cacheAccountSetting: "base_url",
         addOrDelFavorite: async (comicId, folderId, isAdding) => {
             const origin = this.apiUrl;
             const token = this.sessionToken(origin);
@@ -1344,22 +1360,40 @@ class CopyManga extends ComicSource {
                 "Authorization": "Token " + token,
             }, "comic_id=" + encodeURIComponent(uuid) + "&is_collect=" + (isAdding ? 1 : 0));
             this.checkWebResponse(response, "Favorites");
+            this.favoriteObservations(origin, token)?.set(comicId, isAdding);
             return "ok";
         },
         loadComics: async (page, folder) => {
             const origin = this.apiUrl;
-            const headers = this.webApiHeaders;
-            if (!headers.Authorization) throw "Login expired";
+            const token = this.sessionToken(origin);
+            if (!token) throw "Login expired";
             const ordering = this.loadSetting("favorites_ordering") || "-datetime_updated";
             const limit = CopyManga.apiPageSize;
             const offset = (page - 1) * limit;
             const response = await Network.get(
                 origin + "/api/v3/member/collect/comics?limit=" + limit + "&offset=" + offset +
                     "&free_type=1&ordering=" + encodeURIComponent(ordering),
-                {...headers, "Referer": origin + "/web/person/shujia"},
+                {...this.webApiHeaders(token), "Referer": origin + "/web/person/shujia"},
             );
-            return this.parseApiPage(response, "Favorites", offset);
-        }
+            const result = this.parseApiPage(response, "Favorites", offset);
+            const observations = this.favoriteObservations(origin, token);
+            if (observations) {
+                for (const comic of result.comics) {
+                    if (observations.get(comic.id) !== false) observations.set(comic.id, true);
+                }
+            }
+            return result;
+        },
+        loadCachePage: async (page, folder, expectedTotal) => {
+            const {comics, total} = await this.favorites.loadComics(page, folder);
+            const limit = CopyManga.apiPageSize;
+            const offset = (page - 1) * limit;
+            const expectedCount = Math.min(limit, Math.max(0, total - offset));
+            if ((expectedTotal != null && total !== expectedTotal) || comics.length !== expectedCount) {
+                throw "Favorites: inconsistent cache page";
+            }
+            return {comics, total, maxPage: Math.ceil(total / limit)};
+        },
     }
 
     comic = {
@@ -1390,32 +1424,22 @@ class CopyManga extends ComicSource {
                 cover = coverImg.attributes['src'] || coverImg.attributes['data-src'] || '';
             }
 
-            let authors = [];
-            let authorEl = doc.querySelector('.comicParticulars-title-right');
-            if (authorEl) {
-                let authorLinks = authorEl.querySelectorAll('a');
-                for (let i = 0; i < authorLinks.length; i++) {
-                    let link = authorLinks[i];
-                    let text = link.text ? link.text.trim() : '';
-                    if (text && !authors.includes(text)) {
-                        authors.push(text);
-                    }
-                    let href = link.attributes['href'] || '';
-                    let authorMatch = href.match(/\/author\/([^\/]+)/);
-                    if (authorMatch && authorMatch[1] && text) {
-                        this.author_path_word_dict[text] = authorMatch[1];
-                    }
-                }
+            const authors = new Set();
+            const authorLinks = doc.querySelectorAll('.comicParticulars-title-right a[href*="/author/"]');
+            for (const link of authorLinks) {
+                const name = link.text?.trim();
+                const authorId = link.attributes?.href?.match(/^(?:(?:https?:)?\/\/[^/]+)?\/author\/([^/?#]+)/)?.[1];
+                if (!name || !authorId) continue;
+                authors.add(name);
+                this.author_path_word_dict[name] = authorId;
             }
 
-            let tags = [];
-            let tagEls = doc.querySelectorAll('.comicParticulars-tag a');
-            for (let i = 0; i < tagEls.length; i++) {
-                let tag = tagEls[i];
-                let text = tag.text ? tag.text.trim().replace(/^#/, '') : '';
-                if (text && !tags.includes(text)) {
-                    tags.push(text);
-                }
+            const tags = new Set();
+            const tagLinks = doc.querySelectorAll('.comicParticulars-tag a[href*="/comics?"]');
+            for (const link of tagLinks) {
+                if (!/[?&]theme=[^&#]+/.test(link.attributes?.href ?? "")) continue;
+                const name = link.text?.trim().replace(/^#\s*/, "");
+                if (name) tags.add(name);
             }
 
             let description = '';
@@ -1508,20 +1532,18 @@ class CopyManga extends ComicSource {
             const comicId = this.comicUuid(doc) || '';
             const collectBtn = doc.querySelector('.comicParticulars-botton.collect');
 
-            let isFavorite = false;
-            if (collectBtn) {
-                let btnText = collectBtn.text || '';
-                isFavorite = btnText.includes('已收藏');
-            }
+            // The default "add to bookshelf" label does not establish remote membership.
+            const observations = this.favoriteObservations(origin, this.sessionToken(origin));
+            const isFavorite = observations?.get(id) ?? (collectBtn?.text?.includes('已收藏') ? true : null);
 
             return {
                 title: title,
                 cover: cover,
                 description: description,
                 tags: {
-                    "作者": authors,
+                    "作者": [...authors],
                     "更新": [updateTime],
-                    "标签": tags,
+                    "标签": [...tags],
                     "状态": [status],
                 },
                 chapters: chapters,
@@ -1741,7 +1763,7 @@ class CopyManga extends ComicSource {
             let res = await Network.post(
                 `${this.apiUrl}/api/v3/member/roast`,
                 {
-                    ...this.webApiHeaders,
+                    ...this.webApiHeaders(token),
                     "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
                 },
                 `chapter_id=${epId}&roast=${encodeURIComponent(content)}`,
