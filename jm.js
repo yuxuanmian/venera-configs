@@ -7,11 +7,12 @@ class JM extends ComicSource {
     // unique id of the source
     key = "jm"
 
-    version = "1.4.0"
+    version = "1.4.1"
 
     minAppVersion = "1.5.0"
 
     static jmVersion = "2.0.16"
+    static favoritePageSize = 20
 
     static jmPkgName = "com.example.app"
 
@@ -680,6 +681,8 @@ class JM extends ComicSource {
     // favorite related
     favorites = {
         multiFolder: true,
+        cacheAllFolder: "0",
+        cacheSettings: ["favoriteOrder"],
         /**
          * add or delete favorite.
          * throw `Login expired` to indicate login expired, App will automatically re-login and re-add/delete favorite
@@ -739,19 +742,35 @@ class JM extends ComicSource {
          * throw `Login expired` to indicate login expired, App will automatically re-login retry.
          * @param page {number}
          * @param folder {string?} - folder id, null for non-multi-folder
-         * @returns {Promise<{comics: Comic[], maxPage: number}>}
+         * @returns {Promise<{comics: Comic[], maxPage: number, total: number}>}
          */
         loadComics: async (page, folder) => {
-            let order = this.loadSetting('favoriteOrder')
-            let res = await this.get(`${this.baseUrl}/favorite?folder_id=${folder}&page=${page}&o=${order}`)
-            let json = JSON.parse(res)
-            let total = json.total
-            let maxPage = Math.ceil(total / 20)
-            let comics = json.list.map((e) => this.parseComic(e))
-            return {
-                comics: comics,
-                maxPage: maxPage
+            const order = this.loadSetting('favoriteOrder')
+            const res = await this.get(`${this.baseUrl}/favorite?folder_id=${folder}&page=${page}&o=${order}`)
+            const data = JSON.parse(res)
+            const rawTotal = data?.total
+            const total = typeof rawTotal === 'string' && /^\d+$/.test(rawTotal)
+                ? Number(rawTotal) : rawTotal
+            if (!Array.isArray(data?.list) || !Number.isSafeInteger(total) || total < 0) {
+                throw 'Invalid favorite pagination'
             }
+            return {
+                comics: data.list.map((comic) => this.parseComic(comic)),
+                maxPage: Math.ceil(total / JM.favoritePageSize),
+                total,
+            }
+        },
+        loadCachePage: async (page, folder, expectedTotal) => {
+            const result = await this.favorites.loadComics(page, folder)
+            const size = JM.favoritePageSize
+            const offset = (page - 1) * size
+            const count = Math.min(size, Math.max(0, result.total - offset))
+            if ((expectedTotal != null && result.total !== expectedTotal) ||
+                result.comics.length !== count ||
+                result.comics.some((comic) => !/^\d+$/.test(comic.id))) {
+                throw 'Invalid favorite cache page'
+            }
+            return result
         },
         singleFolderForSingleComic: true,
     }

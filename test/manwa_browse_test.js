@@ -11,7 +11,7 @@ const config = fs.readFileSync(path.join(root, 'manwa.js'), 'utf8');
 function setup(respond, parseHtml, sendMessage) {
   const calls = [];
   const sandbox = {parseHtml, sendMessage};
-  vm.runInNewContext(`${library}\n${config}\nthis.source = new Manwa();\nthis.net = Network;\nthis.ui = UI;\nthis.app = APP;`, sandbox);
+  vm.runInNewContext(`${library}\n${config}\nthis.source = new Manwa();\nthis.net = Network;\nthis.ui = UI;`, sandbox);
   if (parseHtml) {
     vm.runInContext('HtmlDocument = class { constructor(body) { return parseHtml(body); } };', sandbox);
   }
@@ -20,7 +20,7 @@ function setup(respond, parseHtml, sendMessage) {
     calls.push({url, headers});
     return respond(url);
   };
-  return {source: sandbox.source, calls, network: sandbox.net, ui: sandbox.ui, app: sandbox.app};
+  return {source: sandbox.source, calls, network: sandbox.net, ui: sandbox.ui};
 }
 
 const json = (value, status = 200) => ({status, body: JSON.stringify(value)});
@@ -345,33 +345,16 @@ test('the shared ranking page displays the selected HTML list and defaults to po
   assert.deepEqual(calls.map(({url}) => url.pathname + url.search), ['/rank', '/rank', '/rank']);
 });
 
-test('the ranking preview links to the shared page with a working legacy category fallback', async () => {
-  const title = {text: '榜单预览作品', attributes: {}, querySelector: () => null};
-  const cover = {attributes: {'data-original': '/static/preview.webp'}};
-  const entry = {
-    attributes: {href: '/book/301'},
-    classNames: ['rank-list-info'],
-    querySelector: (selector) => selector === '.rank-list-cover-img' ? cover : title,
-  };
-  const {source, app} = setup(
-    ({pathname}) => ({status: 200, body: pathname}),
-    (body) => body === '/rank' ? rankingDocument() : {
-      querySelectorAll: (selector) => selector === '.rank-list .rank-list-info' ? [entry] : [],
-      dispose() {},
-    },
-  );
-  const [modern] = await source.explore[0].load();
-  assert.equal(modern.viewMore.page, 'ranking');
-
-  delete app.supportsRankingPageTarget;
-  const [legacy] = await source.explore[0].load();
-  assert.equal(legacy.viewMore.page, 'category');
-  const {category, param} = legacy.viewMore.attributes;
-  assert.equal(param, 'ranking');
+test('the source omits recommendations and still accepts legacy ranking targets', async () => {
+  const {source, calls} = setup(() => ({status: 200, body: 'ranking'}), rankingDocument);
+  assert.equal(source.explore, undefined);
+  const category = '排行榜';
+  const param = 'ranking';
   const [group] = await source.categoryComics.optionLoader(category, param);
   assert.deepEqual(Array.from(group.options), Array.from(source.categoryComics.ranking.options));
   const result = await source.categoryComics.load(category, param, ['end'], 1);
   assert.equal(result.comics[0].id, '301');
+  assert.deepEqual(calls.map(({url}) => url.pathname), ['/rank']);
 });
 
 test('ranking uses the site scroll page numbers and stops at an empty page or the site limit', async () => {

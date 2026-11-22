@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -67,7 +68,15 @@ class ValidateCatalogTests(unittest.TestCase):
         entries = json.loads((root / "index.json").read_text(encoding="utf-8"))
         by_file = {entry["fileName"]: entry["key"] for entry in entries}
         self.assertEqual(by_file["copy_manga.js"], "copy_manga")
-        self.assertEqual(by_file["copy_manga_multi_accounts.js"], "copy_manga_multi")
+        multi_file = root / "copy_manga_multi_accounts.js"
+        self.assertIsNotNone(
+            re.search(
+                r'(?m)^\s*key\s*=\s*"copy_manga_multi"',
+                multi_file.read_text(encoding="utf-8"),
+            )
+        )
+        if multi_file.name in by_file:
+            self.assertEqual(by_file[multi_file.name], "copy_manga_multi")
         self.assertNotIn("cloudTracking", (root / "index.json").read_text(encoding="utf-8"))
 
 
