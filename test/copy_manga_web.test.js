@@ -129,19 +129,18 @@ test("search uses public headers and 12-item pages with an old saved preference"
     await assert.rejects(() => source.search.load("a + b", [""], 3), /invalid pagination/);
 });
 
-test("search discovery is scoped to the selected node", async () => {
+test("disabled nodes fall back to the verified host and only the overseas line is offered", async () => {
     const settings = {base_url: "www.copy20.com"};
     const {source, calls} = harness(call => {
-        if (call.url.pathname === "/search") {
-            return html('const countApi = "https://other.example/api/kb/web/searchx/comics";');
-        }
+        if (call.url.pathname === "/") return html("content-box");
         return api({list: [], total: 0, limit: 12, offset: 0});
     }, {settings});
     await source.search.load("work", [], 1);
-    assert.deepEqual(calls.map(call => call.url.origin), [
-        "https://www.copy20.com", "https://www.copy20.com",
-    ]);
-    assert.equal(calls[1].url.pathname, "/api/kb/web/searchcl/comics");
+    await source.runSpeedTest();
+    assert.deepEqual(calls.map(call => call.url.origin), [origin, origin]);
+    assert.equal(calls[0].url.pathname, "/api/kb/web/searchcl/comics");
+    assert.deepEqual(plain(source.settings.base_url.options.map(option => option.value)), ["www.mangacopy.com"]);
+    assert.deepEqual(plain(source.settings.region.options.map(option => option.value)), ["0"]);
 });
 
 test("favorites use the detail UUID and validate mutations and pagination", async () => {
@@ -175,6 +174,7 @@ test("favorites use the detail UUID and validate mutations and pagination", asyn
     assert.equal(result.comics[0].id, "work");
     assert.equal(result.maxPage, 2);
     settings.base_url = "www.copy20.com";
+    state.set("web_session", {origin: "https://www.copy20.com", token: "legacy-test-session"});
     await assert.rejects(() => source.favorites.loadComics(1, null), /Login expired/);
     assert.equal(calls.length, 5);
 });
@@ -197,6 +197,38 @@ test("category and author routes paginate with offsets and parse quoted strings 
     assert.equal(calls[1].url.pathname, "/author/author-id/comics");
     assert.equal(calls[1].url.search, "?offset=50&limit=50");
     assert.throws(() => source.parseEmbeddedList("[{'name': untrusted()}]"), /JSON/);
+});
+
+test("both author entry points join separate cover and title links by comic ID", async () => {
+    function link(id, text, image) {
+        return {
+            attributes: {href: "/comic/" + id},
+            text,
+            querySelector: selector => selector === "img" && image ? {attributes: image} : null,
+        };
+    }
+    const firstCover = "https://cover.example/first.jpg";
+    const secondCover = "https://cover.example/second.jpg";
+    const documents = {author: {
+        '.correlationList a[href*="/comic/"]': [
+            link("first", "", {"data-src": firstCover, src: "/static/loading.png"}),
+            link("first", "First"),
+            link("second", "Second"),
+            link("second", "", {"data-src": secondCover}),
+        ],
+    }};
+    const {source, calls} = harness(() => html("author"), {documents});
+    source.author_path_word_dict.Author = "author-id";
+    const bySearch = await source.search.load("author:Author", [], 1);
+    const byCategory = await source.categoryComics.load("author:Author", "", [], 1);
+    const expected = [
+        {id: "first", title: "First", cover: firstCover},
+        {id: "second", title: "Second", cover: secondCover},
+    ];
+    for (const page of [bySearch, byCategory]) {
+        assert.deepEqual(plain(page.comics.map(({id, title, cover}) => ({id, title, cover}))), expected);
+    }
+    assert.deepEqual(calls.map(({url}) => url.pathname), ["/author/author-id/comics", "/author/author-id/comics"]);
 });
 
 test("detail separates authors from themes and uses shelf observations instead of default button text", async () => {
