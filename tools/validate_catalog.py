@@ -13,6 +13,12 @@ from typing import Any
 
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*\.js$")
+SEMVER_RE = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
 MAX_SOURCES = 256
 
 
@@ -24,6 +30,17 @@ def validate_catalog(root: Path) -> list[str]:
     """Return all structural and syntax errors found in *root*."""
 
     errors: list[str] = []
+    try:
+        metadata = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pass  # Older repositories may omit the version declaration.
+    except (OSError, ValueError) as exc:
+        errors.append(f"catalog.json: cannot read JSON: {exc}")
+    else:
+        minimum = metadata.get("minAppVersion") if isinstance(metadata, dict) else None
+        if not isinstance(minimum, str) or not SEMVER_RE.fullmatch(minimum):
+            errors.append("catalog.json: minAppVersion must be a semantic version")
+
     index_path = root / "index.json"
     try:
         index = json.loads(index_path.read_text(encoding="utf-8"))

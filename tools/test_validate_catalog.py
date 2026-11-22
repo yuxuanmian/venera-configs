@@ -38,6 +38,17 @@ class ValidateCatalogTests(unittest.TestCase):
         self.assertTrue(any("collides ignoring case" in error for error in errors))
         self.assertTrue(any("does not exist" in error for error in errors))
 
+    def test_catalog_minimum_version_requires_valid_semver(self):
+        root = self.write_catalog([])
+        metadata = root / "catalog.json"
+        metadata.write_text('{"minAppVersion":"2.0.0-beta.8+0172"}', encoding="utf-8")
+        self.assertEqual(MODULE.validate_catalog(root), [])
+        for value in ("2.0", "02.0.0", "2.0.0-beta.08", None, 2):
+            with self.subTest(value=value):
+                metadata.write_text(json.dumps({"minAppVersion": value}), encoding="utf-8")
+                errors = MODULE.validate_catalog(root)
+                self.assertTrue(any("catalog.json: minAppVersion" in error for error in errors))
+
     def test_unsafe_names_and_syntax_are_reported(self):
         entries = [
             {"name": "A", "key": "1bad", "fileName": "../a.js", "version": "1"},

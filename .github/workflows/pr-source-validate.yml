@@ -20,6 +20,9 @@ jobs:
       - name: Set up Dart SDK
         uses: dart-lang/setup-dart@v1
 
+      - name: Validate catalog metadata and index
+        run: python3 tools/validate_catalog.py
+
       - name: Fetch base branch
         run: git fetch origin "${{ github.base_ref }}"
 
