@@ -4,7 +4,7 @@ class Manwa extends ComicSource {
 
     key = "manwa"
 
-    version = "1.0.17"
+    version = "1.0.18"
 
     minAppVersion = "1.6.0"
 
@@ -817,7 +817,7 @@ class Manwa extends ComicSource {
         /^(?:(?:https?:)?\/\/manwa\.me)?\/book\/(\d+)\/?(?:[?#].*)?$/i,
     )?.[1]
 
-    parseListCard = (card, {titleSelector, imageSelector, subtitleSelector, descSelector, fallbackTitleSelector}) => {
+    parseListCard = (card, {titleSelector, imageSelector, subtitleSelector, descSelector}) => {
         const bookId = (element) => this.listBookId(element?.attributes.href);
         const titleElement = card.querySelector(titleSelector);
         const titleLink = titleElement?.querySelector("a[href]");
@@ -828,8 +828,7 @@ class Manwa extends ComicSource {
         const attrs = image?.attributes ?? {};
         const title = this.textOf(titleLink) || this.textOf(titleElement)
             || String(link?.attributes.title ?? "").trim()
-            || String(attrs.alt ?? "").trim()
-            || (fallbackTitleSelector ? this.textOf(card.querySelector(fallbackTitleSelector)) : "");
+            || String(attrs.alt ?? "").trim();
         if (!id || !title) {
             return null;
         }
@@ -857,24 +856,6 @@ class Manwa extends ComicSource {
         page: "category",
         attributes: {category: label, param},
     })
-
-    parseRanking = (document) => {
-        const cards = [];
-        for (const info of document.querySelectorAll(".rank-list .rank-list-info")) {
-            // The link and cover may be outside the info element, in the same card.
-            for (let card = info; card && !card.classNames.includes("rank-list"); card = card.parent) {
-                if (card.querySelector(".rank-list-cover-img")) {
-                    cards.push(card);
-                    break;
-                }
-            }
-        }
-        return this.parseListCards(cards, {
-            titleSelector: ".rank-list-info-title, .rank-list-info h2, .rank-list-info h3, .rank-list-info h4, .rank-list-info a[href]",
-            imageSelector: ".rank-list-cover-img",
-            fallbackTitleSelector: ".rank-list-info",
-        });
-    }
 
     rankingTypes = new Map([
         ["hot", "人气榜"],
@@ -929,44 +910,6 @@ class Manwa extends ComicSource {
             maxPage: !comics.size || page === lastPage ? page : undefined,
         };
     }
-
-    explore = [{
-        title: "漫蛙推荐",
-        type: "multiPartPage",
-        load: () => this.readListPage("/", "home", (document) => {
-            const parts = [];
-            for (const list of document.querySelectorAll(".manga-list-2")) {
-                const comics = this.parseListCards(list.children, {
-                    titleSelector: ".manga-list-2-title",
-                    imageSelector: ".manga-list-2-cover-img",
-                    subtitleSelector: ".manga-list-2-tip",
-                });
-                if (!comics.length) {
-                    continue;
-                }
-                const sectionTitle = (element) => {
-                    if (!element) return "";
-                    return this.textOf(element.classNames.includes("manga-list-title")
-                        ? element : element.querySelector(".manga-list-title"));
-                };
-                const title = sectionTitle(list.previousElementSibling)
-                    || sectionTitle(list.parent?.previousElementSibling)
-                    || `推荐 ${parts.length + 1}`;
-                parts.push({title, comics, viewMore: this.categoryTarget("全部漫画")});
-            }
-            const comics = this.parseRanking(document);
-            if (comics.length) {
-                const viewMore = APP.supportsRankingPageTarget === true
-                    ? {page: "ranking"}
-                    : this.categoryTarget("排行榜", "ranking");
-                parts.push({title: "排行榜", comics, viewMore});
-            }
-            if (!parts.length) {
-                throw "未找到首页漫画列表";
-            }
-            return parts;
-        }),
-    }]
 
     category = {
         title: "漫蛙分类",

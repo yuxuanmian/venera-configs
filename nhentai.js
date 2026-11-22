@@ -7,7 +7,7 @@ class Nhentai extends ComicSource {
     // unique id of the source
     key = "nhentai"
 
-    version = "1.1.0"
+    version = "1.1.1"
 
     minAppVersion = "1.0.0"
 
@@ -751,10 +751,21 @@ class Nhentai extends ComicSource {
         enableTagsSuggestions: true,
     }
 
+    async fetchFavoritePage(page) {
+        const url = `${this.apiBaseUrl}/favorites?page=${page}`
+        const response = await this.sendAuthRequest("GET", url)
+        if (response.status !== 200) {
+            throw this.buildApiError(response, "Failed to load online favorites")
+        }
+        return JSON.parse(response.body)
+    }
+
     // favorite related
     favorites = {
         // whether support multi folders
         multiFolder: false,
+        cacheSettings: ["apiKey"],
+        cacheAccountSetting: "apiKey",
         /**
          * add or delete favorite.
          * @param comicId {string}
@@ -779,14 +790,29 @@ class Nhentai extends ComicSource {
          * @param folder {string?} - folder id, null for non-multi-folder
          * @returns {Promise<{comics: Comic[], maxPage: number}>}
          */
-        loadComics: async (page, folder) => {
-            let apiUrl = `${this.apiBaseUrl}/favorites?page=${page}`
-            let apiRes = await this.sendAuthRequest("GET", apiUrl)
-            if (apiRes.status === 200) {
-                return this.parseComicListFromApi(JSON.parse(apiRes.body))
+        loadComics: async (page) => this.parseComicListFromApi(await this.fetchFavoritePage(page)),
+        loadCachePage: async (page, _folder, expectedTotal) => {
+            const data = await this.fetchFavoritePage(page)
+            const parseCount = (value) => typeof value === "string" && /^\d+$/.test(value)
+                ? Number(value) : value
+            const maxPage = parseCount(data?.num_pages)
+            const total = data?.total == null ? null : parseCount(data.total)
+            if (!Array.isArray(data?.result) || !Number.isSafeInteger(maxPage) || maxPage < 0 ||
+                (total != null && (!Number.isSafeInteger(total) || total < 0 ||
+                    (expectedTotal != null && total !== expectedTotal))) ||
+                data.result.some((item) => {
+                    const id = item?.id
+                    return (typeof id !== "string" && typeof id !== "number") || !/^[1-9]\d*$/.test(id)
+                })) {
+                throw "Invalid favorite pagination"
             }
-            throw this.buildApiError(apiRes, "Failed to load online favorites")
-        }
+            const empty = page === 1 && data.result.length === 0 && maxPage <= 1 && (total == null || total === 0)
+            return {
+                comics: data.result.map((item) => this.parseComicFromApi(item)),
+                maxPage: empty ? 0 : maxPage,
+                total,
+            }
+        },
     }
 
     /// single comic related

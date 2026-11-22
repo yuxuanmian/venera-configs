@@ -133,10 +133,9 @@ function listChangedFiles(ref) {
 
 function diffIndexEntries(baseByFile, currentByFile) {
   const changed = [];
-  const allFiles = new Set([...baseByFile.keys(), ...currentByFile.keys()]);
-  for (const fileName of allFiles) {
+  // Removing only an entry unpublishes the script without updating its version.
+  for (const [fileName, currentEntry] of currentByFile) {
     const baseEntry = baseByFile.get(fileName);
-    const currentEntry = currentByFile.get(fileName);
     if (JSON.stringify(baseEntry) !== JSON.stringify(currentEntry)) {
       changed.push(fileName);
     }
