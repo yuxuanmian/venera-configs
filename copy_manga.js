@@ -4,7 +4,7 @@ class CopyManga extends ComicSource {
 
     key = "copy_manga"
 
-    version = "1.4.6"
+    version = "1.4.7"
 
     minAppVersion = "1.6.0"
 
@@ -1279,12 +1279,12 @@ class CopyManga extends ComicSource {
                     return {failure: {message: "Favorites scan: invalid collection"}};
                 }
                 const limit = CopyManga.apiPageSize;
-                // A cursor with a null offset rechecks the first page without emitting its items again.
+                // A cursor with offset 0 rechecks the first page. Dart null fields return as JS undefined.
                 if (cursor !== null && (!cursor || !Number.isSafeInteger(cursor.total) || cursor.total < 0 ||
                     !Array.isArray(cursor.headIds) || cursor.headIds.length !== Math.min(limit, cursor.total) ||
                     !cursor.headIds.every(id => this.isValidScanId(id)) ||
-                    (cursor.offset !== null && (!Number.isSafeInteger(cursor.offset) ||
-                        cursor.offset <= 0 || cursor.offset >= cursor.total || cursor.offset % limit !== 0)))) {
+                    !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 || cursor.offset % limit !== 0 ||
+                    (cursor.offset > 0 && cursor.offset >= cursor.total))) {
                     return {failure: {message: "Favorites scan: invalid cursor"}};
                 }
                 const origin = this.apiUrl;
@@ -1319,7 +1319,7 @@ class CopyManga extends ComicSource {
                 if (!ids.every(id => this.isValidScanId(id)) || new Set(ids).size !== ids.length) {
                     return {failure: {message: "Favorites scan: invalid or duplicate comic ID"}};
                 }
-                if (cursor?.offset === null) {
+                if (cursor?.offset === 0) {
                     if (!ids.every((id, index) => id === cursor.headIds[index])) {
                         return {failure: {message: "Favorites scan: first page changed"}};
                     }
@@ -1334,7 +1334,7 @@ class CopyManga extends ComicSource {
                         : {comicId, failure: {message: "Favorites scan: invalid or missing latest chapter ID"}};
                 });
                 const nextOffset = offset + list.length;
-                const next = {offset: nextOffset < total ? nextOffset : null, total, headIds: cursor?.headIds ?? ids};
+                const next = {offset: nextOffset < total ? nextOffset : 0, total, headIds: cursor?.headIds ?? ids};
                 return {items, next};
             },
         },

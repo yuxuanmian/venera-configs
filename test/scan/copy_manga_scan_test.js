@@ -11,6 +11,10 @@ const favoritesPage = (list, total, offset = 0) => ({
   status: 200,
   body: JSON.stringify({code: 200, results: {list, total, offset, limit: 12}}),
 });
+// flutter_qjs converts Dart null map values to JavaScript undefined.
+const bridgedCursor = cursor => Object.fromEntries(
+  Object.entries(toPlain(cursor)).map(([key, value]) => [key, value === null ? undefined : value]),
+);
 
 function harness(request) {
   const {source, calls, request: hostRequest} = loadSource('copy_manga.js', 'CopyManga', {
@@ -44,12 +48,12 @@ test('Copy Manga scans by favorite time and verifies the first page after pagina
     comicId: 'work-0', observation: {update: {latestChapterId: 'chapter-0'}},
   });
   assert.equal(first.next.offset, 12);
-  const last = await load(toPlain(first.next));
+  const last = await load(bridgedCursor(first.next));
   assert.deepEqual(toPlain(last.items), [
     {comicId: 'work-12', observation: {update: {latestChapterId: 'chapter-12'}}},
   ]);
-  assert.equal(last.next.offset, null);
-  assert.deepEqual(toPlain(await load(toPlain(last.next))), {items: [], next: null});
+  assert.deepEqual(toPlain(await load(bridgedCursor(last.next))), {items: [], next: null});
+  assert.equal(last.next.offset, 0);
 
   assert.deepEqual(calls.map(call => new URL(call.url).searchParams.get('offset')), ['0', '12', '0']);
   for (const call of calls) {
@@ -95,16 +99,17 @@ test('Copy Manga rejects a truncated page or a changing bookshelf total', async 
 
 test('Copy Manga rechecks first-page identities and handles an empty shelf', async () => {
   let list = [favorite(0), favorite(1)];
-  const {load} = harness(() => favoritesPage(list, list.length));
+  const {load, calls} = harness(() => favoritesPage(list, list.length));
   const cursor = (await load(null)).next;
-  assert.equal(cursor.offset, null);
+  assert.deepEqual(toPlain(await load(bridgedCursor(cursor))), {items: [], next: null});
+  assert.equal(calls.length, 2);
   list.reverse();
-  assert.match((await load(cursor)).failure.message, /first page changed/);
+  assert.match((await load(bridgedCursor(cursor))).failure.message, /first page changed/);
 
   list = [];
   const first = await load(null);
   assert.deepEqual(toPlain(first.items), []);
-  assert.deepEqual(toPlain(await load(first.next)), {items: [], next: null});
+  assert.deepEqual(toPlain(await load(bridgedCursor(first.next))), {items: [], next: null});
 });
 
 test('Copy Manga stops on an expired or replaced session without emitting items', async () => {
