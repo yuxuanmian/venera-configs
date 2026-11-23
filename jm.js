@@ -7,7 +7,7 @@ class JM extends ComicSource {
     // unique id of the source
     key = "jm"
 
-    version = "1.4.2"
+    version = "1.4.3"
 
     minAppVersion = "1.5.0"
 
@@ -30,6 +30,9 @@ class JM extends ComicSource {
         "www.cdnaspa.cc",
         "www.cdnntr.cc",
     ];
+    static apiDomains = JM.fallbackServers
+    // Temporarily paused because this host returns an empty favorite folder list.
+    static pausedApiDomain = "www.cdnutc.cc"
 
     static imageUrl = "https://cdn-msp.jmapinodeudzn.net"
 
@@ -40,8 +43,9 @@ class JM extends ComicSource {
     }
 
     get baseUrl() {
-        let index = parseInt(this.loadSetting('apiDomain')) - 1
-        return `https://${JM.apiDomains[index]}`
+        const index = parseInt(this.loadSetting('apiDomain')) - 1
+        const domains = JM.apiDomains
+        return `https://${domains[index] ?? domains.find(Boolean)}`
     }
 
     get imageUrl() {
@@ -49,7 +53,7 @@ class JM extends ComicSource {
     }
 
     overwriteApiDomains(domains) {
-        if (domains.length != 0) JM.apiDomains = domains
+        if (domains.some(Boolean)) JM.apiDomains = domains
     }
 
     overwriteImgUrl(url) {
@@ -134,7 +138,6 @@ class JM extends ComicSource {
         let domainSecret = "diosfjckwpqpdfjkvnqQjsik"
         let title = ""
         let message = ""
-        let servers = []
         let domains = []
         let res = null;
         try {
@@ -145,20 +148,25 @@ class JM extends ComicSource {
         if (res && res.status === 200) {
             let data = this.convertData(await res.text(), domainSecret)
             let json = JSON.parse(data)
-            if (json["Server"]) {
+            if (Array.isArray(json["Server"])) {
                 title = "Update Success"
                 message = "\n"
-                servers = json["Server"].slice(0, 4)
+                // Keep the original slots so saved selections on other lines still work.
+                domains = json["Server"].slice(0, 4).map(host => {
+                    if (typeof host !== 'string' || !host) return null
+                    return host.toLowerCase().replace(/\.$/, '') === JM.pausedApiDomain ? null : host
+                })
             }
         }
-        if (servers.length === 0) {
+        if (!domains.some(Boolean)) {
             title = "Update Failed"
             message = `Using built-in domains:\n\n`
-            servers = JM.fallbackServers
+            domains = JM.fallbackServers
         }
-        for (let i = 0; i < servers.length; i++) {
-            message = message + `線路${i + 1}:  ${servers[i]}\n\n`
-            domains.push(servers[i])
+        const fallbackLine = domains.findIndex(Boolean) + 1
+        for (let i = 0; i < domains.length; i++) {
+            const status = domains[i] ?? `暫停，使用線路${fallbackLine}`
+            message += `線路${i + 1}:  ${status}\n\n`
         }
         if (showConfirmDialog) {
             UI.showDialog(
@@ -376,8 +384,9 @@ class JM extends ComicSource {
          * logout function, clear account related data
          */
         logout: () => {
-            for (let url of JM.apiDomains) {
-                Network.deleteCookies(url)
+            // Clear sessions created before this host was paused as well.
+            for (const host of [JM.pausedApiDomain, ...JM.apiDomains.filter(Boolean)]) {
+                Network.deleteCookies(`https://${host}`)
             }
         },
 

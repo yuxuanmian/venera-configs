@@ -47,6 +47,61 @@ function readForm(call) {
     }));
 }
 
+test('JM skips the paused API host without shifting saved line numbers', async () => {
+    const manifest = [
+        'line1.example.invalid', 'www.cdnutc.cc', 'line3.example.invalid', 'line4.example.invalid',
+    ];
+    const clearedSessions = [];
+    const {source} = loadSource('jm.js', 'JM', {
+        data: {settings: {apiDomain: '2'}},
+        globals: {
+            fetch: async () => ({status: 200, text: async () => JSON.stringify({Server: manifest})}),
+            Network: {deleteCookies: url => clearedSessions.push(url)},
+        },
+    });
+    source.convertData = value => value;
+    assert.equal(source.baseUrl, 'https://www.cdnsha.org');
+
+    await source.refreshApiDomains(false);
+    assert.equal(source.baseUrl, 'https://line1.example.invalid');
+    assert.equal(source.loadSetting('apiDomain'), '2');
+    source.data.settings.apiDomain = '3';
+    assert.equal(source.baseUrl, 'https://line3.example.invalid');
+    source.data.settings.apiDomain = '4';
+    assert.equal(source.baseUrl, 'https://line4.example.invalid');
+    source.account.logout();
+    assert.deepEqual(clearedSessions.sort(), manifest.map(host => `https://${host}`).sort());
+
+    manifest.splice(0, manifest.length, 'WWW.CDNUTC.CC.');
+    await source.refreshApiDomains(false);
+    assert.equal(source.baseUrl, 'https://www.cdnntr.cc');
+});
+
+test('JM displays the fallback line in the manual domain refresh', async () => {
+    let dialog;
+    const {source} = loadSource('jm.js', 'JM', {
+        data: {settings: {apiDomain: '2'}},
+        globals: {
+            fetch: async () => ({
+                status: 200,
+                text: async () => JSON.stringify({Server: ['line1.example.invalid', 'www.cdnutc.cc']}),
+            }),
+            UI: {showDialog: (title, message, buttons) => { dialog = {title, message, buttons}; }},
+        },
+    });
+    source.convertData = value => value;
+    const imageRefreshes = [];
+    source.refreshImgUrl = () => imageRefreshes.push(source.baseUrl);
+
+    await source.refreshApiDomains(true);
+    assert.equal(dialog.title, 'Update Success');
+    assert.match(dialog.message, /線路2:  暫停，使用線路1/);
+    assert.equal(source.baseUrl, 'https://www.cdnsha.org');
+    dialog.buttons.find(button => button.text === 'Apply').callback();
+    assert.equal(source.baseUrl, 'https://line1.example.invalid');
+    assert.deepEqual(imageRefreshes, [source.baseUrl]);
+});
+
 test('JM posts multipart credentials and requires a successful login', async () => {
     let response = {uid: '1'};
     const {source, calls} = fixture(() => response);
