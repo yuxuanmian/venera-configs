@@ -2,6 +2,7 @@
 .vscode
 test/*
 !test/copy_manga_web.test.js
+!test/jm_app.test.js
 !test/manwa_update_check_test.js
 !test/manwa_browse_test.js
 !test/scan/
