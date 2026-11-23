@@ -278,7 +278,7 @@ test("detail separates authors from themes and uses shelf observations instead o
     assert.equal((await source.comic.loadInfo("work")).isFavorite, null);
 });
 
-test("full favorite refresh reads exact totals with the configured sort and stops on pagination drift", async () => {
+test("full favorite refresh defaults to newest favorites and stops on pagination drift", async () => {
     const state = new Map([["web_session", {origin, token: "fixture-token"}]]);
     const {source, calls} = harness(call => {
         const offset = Number(call.url.searchParams.get("offset"));
@@ -289,7 +289,7 @@ test("full favorite refresh reads exact totals with the configured sort and stop
             return {comic: {path_word: id, name: id}};
         });
         return api({list, offset, total, limit: 12});
-    }, {state, settings: {favorites_ordering: "-datetime_modifier"}});
+    }, {state});
 
     const first = await source.favorites.loadCachePage(1, "", null);
     const last = await source.favorites.loadCachePage(2, "", first.total);
@@ -298,6 +298,7 @@ test("full favorite refresh reads exact totals with the configured sort and stop
     assert.equal(first.comics.length, 12);
     assert.equal(last.total, 13);
     assert.equal(last.maxPage, 2);
+    assert.equal(source.settings.favorites_ordering.default, "-datetime_modifier");
     assert.deepEqual(plain(last.comics.map(comic => comic.id)), ["work-12"]);
     assert.deepEqual(calls.map(call => call.url.searchParams.get("offset")), ["0", "12"]);
     assert.deepEqual(calls.map(call => call.url.searchParams.get("ordering")), [

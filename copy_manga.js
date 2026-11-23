@@ -4,7 +4,7 @@ class CopyManga extends ComicSource {
 
     key = "copy_manga"
 
-    version = "1.4.7"
+    version = "1.4.8"
 
     minAppVersion = "1.6.0"
 
@@ -1239,7 +1239,7 @@ class CopyManga extends ComicSource {
             const origin = this.apiUrl;
             const token = this.sessionToken(origin);
             if (!token) throw "Login expired";
-            const ordering = this.loadSetting("favorites_ordering") || "-datetime_updated";
+            const ordering = this.loadSetting("favorites_ordering") || this.settings.favorites_ordering.default;
             const offset = (page - 1) * CopyManga.apiPageSize;
             const {url, headers} = this.favoritePageRequest(origin, token, offset, ordering);
             const response = await Network.get(url, headers);
@@ -1763,7 +1763,7 @@ class CopyManga extends ComicSource {
                     text: '阅读时间'
                 }
             ],
-            default: '-datetime_updated',
+            default: '-datetime_modifier',
         },
         region: {
             title: "CDN线路",

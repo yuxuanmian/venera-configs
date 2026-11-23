@@ -7,12 +7,14 @@ class JM extends ComicSource {
     // unique id of the source
     key = "jm"
 
-    version = "1.4.1"
+    version = "1.4.2"
 
     minAppVersion = "1.5.0"
 
-    static jmVersion = "2.0.16"
+    static jmVersion = "2.1.14"
+    static language = "TW"
     static favoritePageSize = 20
+    static allFavorites = "0"
 
     static jmPkgName = "com.example.app"
 
@@ -20,6 +22,7 @@ class JM extends ComicSource {
     url = "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/jm.js"
 
     dailyCheckInInProgress = false
+    favoriteChangesInProgress = new Set()
 
     static fallbackServers = [
         "www.cdntwice.org",
@@ -63,8 +66,8 @@ class JM extends ComicSource {
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
             "Connection": "keep-alive",
-            "Origin": "https://localhost",
-            "Referer": "https://localhost/",
+            "Origin": "http://localhost",
+            "Referer": "http://localhost/",
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "cross-site",
@@ -95,7 +98,7 @@ class JM extends ComicSource {
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
             "Connection": "keep-alive",
-            "Referer": "https://localhost/",
+            "Referer": "http://localhost/",
             "Sec-Fetch-Dest": "image",
             "Sec-Fetch-Mode": "no-cors",
             "Sec-Fetch-Site": "cross-site",
@@ -253,10 +256,10 @@ class JM extends ComicSource {
      * @param url {string}
      * @returns {Promise<string>}
      */
-    async get(url) {
+    async get(url, headers = {}) {
         let time = Math.floor(Date.now() / 1000)
         let kJmSecret = "185Hcomic3PAPP7R"
-        let res = await Network.get(url, this.getApiHeaders(time))
+        let res = await Network.get(url, {...this.getApiHeaders(time), ...headers})
         if(res.status !== 200) {
             if(res.status === 401) {
                 let json = JSON.parse(res.body)
@@ -276,12 +279,12 @@ class JM extends ComicSource {
         return this.convertData(data, `${time}${kJmSecret}`)
     }
 
-    async post(url, body) {
+    async post(url, body, contentType = "application/x-www-form-urlencoded") {
         let time = Math.floor(Date.now() / 1000)
         let kJmSecret = "185Hcomic3PAPP7R"
         let res = await Network.post(url, {
             ...this.getApiHeaders(time),
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": contentType
         }, body)
         if(res.status !== 200) {
             if(res.status === 401) {
@@ -300,6 +303,14 @@ class JM extends ComicSource {
             throw 'Invalid Data'
         }
         return this.convertData(data, `${time}${kJmSecret}`)
+    }
+
+    postForm(url, fields) {
+        const boundary = `VeneraForm-${createUuid()}`
+        const body = Object.entries(fields).map(([name, value]) =>
+            `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`
+        ).join("") + `--${boundary}--\r\n`
+        return this.post(url, body, `multipart/form-data; boundary=${boundary}`)
     }
 
     async dailyCheckIn(isTask = false) {
@@ -351,15 +362,13 @@ class JM extends ComicSource {
          * @returns {Promise<any>}
          */
         login: async (account, pwd) => {
-            let time = Math.floor(Date.now() / 1000)
-            let res = await this.post(
+            const res = await this.postForm(
                 `${this.baseUrl}/login`,
-                `username=${encodeURIComponent(account)}&password=${encodeURIComponent(pwd)}`
+                {username: account, password: pwd}
             )
-            let json = JSON.parse(res)
-            if (json.uid) {
-                this.saveData("uid", json.uid)
-            }
+            const json = JSON.parse(res)
+            if (!json.uid) throw json.errorMsg ?? json.msg ?? 'Login failed'
+            this.saveData("uid", json.uid)
             return "ok"
         },
 
@@ -679,9 +688,22 @@ class JM extends ComicSource {
     }
 
     // favorite related
+    async loadFavoritePage(page, folder) {
+        const order = this.loadSetting('favoriteOrder') || this.settings.favoriteOrder.default
+        const folderParam = folder && String(folder) !== JM.allFavorites
+            ? `&folder_id=${encodeURIComponent(folder)}` : ''
+        const url = `${this.baseUrl}/favorite?page=${page}${folderParam}&o=${encodeURIComponent(order)}&lang=${JM.language}`
+        return JSON.parse(await this.get(url, {'cache-time': 'no'}))
+    }
+
+    async loadAlbumData(id, headers) {
+        const url = `${this.baseUrl}/album?id=${encodeURIComponent(id)}&lang=${JM.language}`
+        return JSON.parse(await this.get(url, headers))
+    }
+
     favorites = {
         multiFolder: true,
-        cacheAllFolder: "0",
+        cacheAllFolder: JM.allFavorites,
         cacheSettings: ["favoriteOrder"],
         /**
          * add or delete favorite.
@@ -689,37 +711,60 @@ class JM extends ComicSource {
          * @param comicId {string}
          * @param folderId {string}
          * @param isAdding {boolean} - true for add, false for delete
-         * @param favoriteId {string?} - [Comic.favoriteId]
          * @returns {Promise<any>} - return any value to indicate success
          */
-        addOrDelFavorite: async (comicId, folderId, isAdding, favoriteId) => {
-            if (isAdding) {
-                await this.post(`${this.baseUrl}/favorite`, `aid=${comicId}`)
-                await this.post(`${this.baseUrl}/favorite_folder`, `type=move&folder_id=${folderId}&aid=${comicId}`)
-            } else {
-                await this.post(`${this.baseUrl}/favorite`, `aid=${comicId}`)
+        addOrDelFavorite: async (comicId, folderId, isAdding) => {
+            const aid = String(comicId).replace(/^jm/i, '')
+            const targetFolder = isAdding && folderId && String(folderId) !== JM.allFavorites
+            if (!this.isNum(aid) || (targetFolder && !this.isNum(folderId))) {
+                throw 'Invalid favorite target'
+            }
+            if (this.favoriteChangesInProgress.has(aid)) throw 'Favorite update in progress'
+            this.favoriteChangesInProgress.add(aid)
+            try {
+                // /favorite toggles the current state, so verify before writing or retrying.
+                const {is_favorite: isFavorite} = await this.loadAlbumData(aid, {'cache-time': 'no'})
+                if (typeof isFavorite !== 'boolean') throw 'Could not confirm favorite state'
+                if (isFavorite === isAdding) {
+                    if (targetFolder) throw 'Comic is already favorited. Refresh the list to check its folder.'
+                    return
+                }
+                const result = JSON.parse(await this.postForm(`${this.baseUrl}/favorite`, {aid}))
+                if (result?.status !== 'ok' || result.type !== (isAdding ? 'add' : 'remove')) {
+                    throw 'Favorite change did not match the requested state. Refresh and retry.'
+                }
+                if (targetFolder) {
+                    try {
+                        const placement = JSON.parse(await this.post(
+                            `${this.baseUrl}/favorite_folder`, `type=move&folder_id=${folderId}&aid=${aid}`
+                        ))
+                        if (placement?.status !== 'ok') throw 'Invalid favorite folder response'
+                    } catch (_) {
+                        throw 'Comic was added to All. Could not confirm the selected folder.'
+                    }
+                }
+            } finally {
+                this.favoriteChangesInProgress.delete(aid)
             }
         },
         /**
          * load favorite folders.
          * throw `Login expired` to indicate login expired, App will automatically re-login retry.
-         * if comicId is not null, return favorite folders which contains the comic.
-         * @param comicId {string?}
-         * @returns {Promise<{folders: {[p: string]: string}, favorited: string[]}>} - `folders` is a map of folder id to folder name, `favorited` is a list of folder id which contains the comic
+         * The directory response provides folder names without per-comic membership.
+         * @returns {Promise<{folders: {[p: string]: string}}>}
          */
-        loadFolders: async (comicId) => {
-            let res = await this.get(`${this.baseUrl}/favorite`)
-            let folders = {
-                "0": this.translate("All")
+        loadFolders: async () => {
+            const {folder_list: directory} = await this.loadFavoritePage(1)
+            if (!Array.isArray(directory)) throw 'Invalid favorite folder list'
+            const folders = {[JM.allFavorites]: this.translate('All')}
+            for (const folder of directory) {
+                const id = String(folder?.FID ?? '')
+                if (!this.isNum(id) || typeof folder?.name !== 'string') {
+                    throw 'Invalid favorite folder'
+                }
+                if (id !== JM.allFavorites) folders[id] = folder.name
             }
-            let json = JSON.parse(res)
-            for (let e of json.folder_list) {
-                folders[e.FID.toString()] = e.name
-            }
-            return {
-                folders: folders,
-                favorited: []
-            }
+            return {folders}
         },
         /**
          * add a folder
@@ -745,9 +790,7 @@ class JM extends ComicSource {
          * @returns {Promise<{comics: Comic[], maxPage: number, total: number}>}
          */
         loadComics: async (page, folder) => {
-            const order = this.loadSetting('favoriteOrder')
-            const res = await this.get(`${this.baseUrl}/favorite?folder_id=${folder}&page=${page}&o=${order}`)
-            const data = JSON.parse(res)
+            const data = await this.loadFavoritePage(page, folder)
             const rawTotal = data?.total
             const total = typeof rawTotal === 'string' && /^\d+$/.test(rawTotal)
                 ? Number(rawTotal) : rawTotal
@@ -786,8 +829,7 @@ class JM extends ComicSource {
             if (id.startsWith('jm')) {
                 id = id.substring(2)
             }
-            let res = await this.get(`${this.baseUrl}/album?id=${id}`);
-            let data = JSON.parse(res)
+            let data = await this.loadAlbumData(id)
             let author = data.author ?? []
             let works = data.works ?? []
             let actors = data.actors ?? []
@@ -843,12 +885,27 @@ class JM extends ComicSource {
          * @returns {Promise<{images: string[]}>}
          */
         loadEp: async (comicId, epId) => {
-            let res = await this.get(`${this.baseUrl}/chapter?id=${epId}`);
-            let data = JSON.parse(res)
-            let images = data.images.map((e) => this.getImageUrl(epId, e))
-            return {
-                images: images
+            const id = epId ?? comicId
+            const query = `id=${encodeURIComponent(id)}`
+            let response
+            try {
+                response = await this.get(`${this.baseUrl}/comic_read?${query}&lang=${JM.language}`)
+            } catch (error) {
+                if (!/^Invalid Status Code: (404|405|501)$/.test(String(error))) throw error
+                const legacy = JSON.parse(await this.get(`${this.baseUrl}/chapter?${query}`))
+                if (!Array.isArray(legacy?.images) || legacy.images.some(name => typeof name !== 'string' || !name)) {
+                    throw 'Invalid legacy chapter image list'
+                }
+                return {images: legacy.images.map(name => this.getImageUrl(id, name))}
             }
+            const data = JSON.parse(response)
+            if (!Array.isArray(data?.images)) throw 'Invalid chapter image list'
+            const pages = [...data.images].sort((a, b) => Number(a?.page) - Number(b?.page))
+            if (pages.some((item, index) => Number(item?.page) !== index + 1 ||
+                typeof item?.image !== 'string' || !/^https?:\/\/[^/?#]+\/[^?#]+/i.test(item.image))) {
+                throw 'Invalid chapter image list'
+            }
+            return {images: pages.map(item => item.image)}
         },
         /**
          * [Optional] provide configs for an image loading
@@ -859,13 +916,10 @@ class JM extends ComicSource {
          */
         onImageLoad: (url, comicId, epId) => {
             const scrambleId = 220980
-            let pictureName = "";
-            for (let i = url.length - 1; i >= 0; i--) {
-                if (url[i] === '/') {
-                    pictureName = url.substring(i + 1, url.length - 5);
-                    break;
-                }
-            }
+            const path = url.split(/[?#]/, 1)[0]
+            const fileName = path.substring(path.lastIndexOf('/') + 1)
+            const extension = fileName.lastIndexOf('.')
+            const pictureName = extension < 0 ? fileName : fileName.substring(0, extension)
             epId = Number(epId);
             let num = 0
             if(epId < scrambleId) {
@@ -895,7 +949,7 @@ class JM extends ComicSource {
             return {
                 headers: this.getImgHeaders(),
                 // gif 图片不需要修改
-                modifyImage: url.endsWith(".gif") ? null : `
+                modifyImage: /\.gif$/i.test(fileName) ? null : `
                     let modifyImage = (image) => {
                         const num = ${num}
                         let blockSize = Math.floor(image.height / num)

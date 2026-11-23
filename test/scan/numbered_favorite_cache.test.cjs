@@ -20,7 +20,7 @@ test('JM favorites cache the requested folder and sort with an exact total', asy
   assert.equal(source.favorites.cacheAllFolder, '0');
   assert.deepEqual(toPlain(source.favorites.cacheSettings), ['favoriteOrder']);
   const last = await source.favorites.loadCachePage(2, '7', 21);
-  assert.deepEqual(requests, ['?folder_id=7&page=2&o=mp']);
+  assert.deepEqual(requests, ['?page=2&folder_id=7&o=mp&lang=TW']);
   assert.equal(last.comics[0].id, '21');
   assert.equal(last.maxPage, 2);
   assert.equal(last.total, 21);
@@ -33,7 +33,7 @@ test('JM favorites cache the requested folder and sort with an exact total', asy
   assert.deepEqual(toPlain(await source.favorites.loadCachePage(1, '0', null)), {
     comics: [], total: 0, maxPage: 0,
   });
-  assert.equal(requests.at(-1), '?folder_id=0&page=1&o=mp');
+  assert.equal(requests.at(-1), '?page=1&o=mp&lang=TW');
   listing = {list: []};
   await assert.rejects(source.favorites.loadCachePage(1, '0', null), /Invalid favorite pagination/);
 });
